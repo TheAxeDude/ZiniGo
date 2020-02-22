@@ -2,7 +2,12 @@
 
 A tool written in Go for saving (legally purchased) magazines from Zinio. 
 
-## Usage
+## Precompiled binaries
+
+ZiniGo can be downloaded for Windows and Linux at https://github.com/TheAxeDude/ZiniGo/tree/master/built
+
+##Usage
+
 ./zinigo -u=Username -p=Password
 
 ## Requirements
