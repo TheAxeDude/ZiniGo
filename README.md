@@ -8,10 +8,10 @@ ZiniGo can be downloaded for Windows and Linux at https://github.com/TheAxeDude/
 
 ## Usage
 
-./zinigo -u=Username -p=Password
+./zinigo -u=Username -p=Password [-c=/path/to/chrome/executable]
 
 ## Requirements
-Google chrome installed, and accessible via the command `google-chrome`
+Google chrome installed, and accessible via the command `google-chrome`, or at a location passed in via the -c parameter.
 
 ## How it works
 ZiniGo logs into Zinio, and pulls a list of all issues purchased. 
