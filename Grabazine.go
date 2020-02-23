@@ -31,16 +31,15 @@ func main() {
 
 	usernamePtr := flag.String("u", "", "Zinio Username")
 	passwordPtr := flag.String("p", "", "Zinio Password")
+	chromePtr := flag.String("c", "google-chrome", "Chrome executable")
 
 	flag.Parse()
-
-	fmt.Println("Username:" + *usernamePtr + " Password: " + *passwordPtr)
 
 	fmt.Println("Starting the application...")
 	initialToken := GetInitialToken()
 	loginToken := GetLoginToken(initialToken, *usernamePtr, *passwordPtr)
 	issues := GetLibrary(loginToken)
-	fmt.Println("Found " + string(len(issues.Data)) + " issues.")
+	fmt.Println("Found " + strconv.Itoa(len(issues.Data))+ " issues in library.")
 
 	fmt.Println("Loading HTML template")
 	template, _ := ioutil.ReadFile("template.html")
@@ -49,9 +48,16 @@ func main() {
 	for _, issue := range issues.Data {
 		issuePath := "./issue/" + strconv.Itoa(issue.Id)
 
+		completeName := "./issue/" + issue.Publication.Name + " - " + issue.Name + ".pdf"
+		if fileExists(completeName) {
+			fmt.Println("Issue already found: "+ issue.Publication.Name + " - " + issue.Name)
+			continue
+		}
+
+
 		pages := GetPages(loginToken, issue)
 
-		filenames := []string{}
+		var filenames []string
 
 		for i := 0; i < len(pages.Data); i++ {
 			fmt.Println("Source ", pages.Data[i].Source)
@@ -65,26 +71,27 @@ func main() {
 
 			//convert to pdf
 
-			cmd := exec.Command("google-chrome", "--headless", "--disable-gpu", "--print-to-pdf="+pathString+".pdf", pathString+".html")
+			cmd := exec.Command(*chromePtr, "--headless", "--disable-gpu", "--print-to-pdf="+pathString+".pdf", pathString+".html")
 
 			fmt.Println(cmd.Args)
 			err := cmd.Run()
 			if err != nil {
 				fmt.Printf("cmd.Run() failed with %s\n. You should retry this page.", err)
 			}
-			os.Remove(pathString + ".html")
-			os.Remove(pathString + ".svg")
+
+			_ = os.Remove(pathString + ".html")
+			_ = os.Remove(pathString + ".svg")
 
 			//remove last page
 			_ = api.RemovePagesFile(pathString+".pdf", "", []string{"2"}, nil)
 			filenames = append(filenames, pathString+".pdf")
 		}
 
-		api.MergeCreateFile(filenames, "./issue/" +issue.Publication.Name + " - " + issue.Name + ".pdf", nil)
+		_ = api.MergeCreateFile(filenames, completeName, nil)
 
 
 		for _, fileName := range filenames{
-			os.Remove(fileName)
+			_ = os.Remove(fileName)
 		}
 	}
 
@@ -163,4 +170,12 @@ func GetLibrary(userToken LoginDto.Response) LibraryDto.Response{
 	_ = json.Unmarshal(data, &responseType)
 
 	return responseType
+}
+
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
 }
