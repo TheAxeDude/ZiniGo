@@ -1,11 +1,11 @@
-package LoginDto
+package main
 
-type Response struct {
+type LoginResponse struct {
 	Status bool   `json:"status"`
-	Data  Data `json:"data"`
+	Data  LoginData `json:"data"`
 }
 
-type Data struct {
+type LoginData struct {
 	User User `json:"user"`
 	Token Token `json:"token"`
 	RefreshToken string `json:"refreshToken"`

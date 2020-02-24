@@ -1,8 +1,6 @@
 package main
 
 import (
-	"./src/LibraryDto"
-	"./src/LoginDto"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -104,7 +102,7 @@ func main() {
 	fmt.Println("Terminating the application...")
 }
 
-func GetPages(userToken LoginDto.Response, issue LibraryDto.Data) Response {
+func GetPages(userToken LoginResponse, issue LibraryData) Response {
 
 	client := &http.Client{
 	}
@@ -140,7 +138,7 @@ func GetInitialToken() (token string, err error) {
 	return string(found[2]), nil
 }
 
-func GetLoginToken(initialToken string, username string, password string) LoginDto.Response{
+func GetLoginToken(initialToken string, username string, password string) LoginResponse{
 	client := &http.Client{
 	}
 
@@ -153,7 +151,7 @@ func GetLoginToken(initialToken string, username string, password string) LoginD
 	resp, _ := client.Do(req)
 	data, _ := ioutil.ReadAll(resp.Body)
 
-	responseType := LoginDto.Response{}
+	responseType := LoginResponse{}
 
 	_ = json.Unmarshal([]byte(data), &responseType)
 
@@ -161,7 +159,7 @@ func GetLoginToken(initialToken string, username string, password string) LoginD
 
 }
 
-func GetLibrary(userToken LoginDto.Response) LibraryDto.Response{
+func GetLibrary(userToken LoginResponse) LibraryResponse{
 	client := &http.Client{
 	}
 
@@ -173,7 +171,7 @@ func GetLibrary(userToken LoginDto.Response) LibraryDto.Response{
 	resp, _ := client.Do(req)
 	data, _ := ioutil.ReadAll(resp.Body)
 
-	responseType := LibraryDto.Response{}
+	responseType := LibraryResponse{}
 
 	_ = json.Unmarshal(data, &responseType)
 

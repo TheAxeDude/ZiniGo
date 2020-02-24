@@ -1,11 +1,11 @@
-package LibraryDto
+package main
 
-type Response struct {
+type LibraryResponse struct {
 	Status bool   `json:"status"`
-	Data  []Data `json:"data"`
+	Data  []LibraryData `json:"data"`
 }
 
-type Data struct {
+type LibraryData struct {
 	Id int `json:"id"`
 	Name string `json:"name"`
 	Publication Publication `json:"publication"`
