@@ -36,7 +36,10 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("Starting the application...")
-	initialToken := GetInitialToken()
+	initialToken, err := GetInitialToken()
+	if err != nil {
+		os.Exit(1)
+	}
 	loginToken := GetLoginToken(initialToken, *usernamePtr, *passwordPtr)
 	issues := GetLibrary(loginToken)
 	fmt.Println("Found " + strconv.Itoa(len(issues.Data))+ " issues in library.")
@@ -121,15 +124,20 @@ func GetPages(userToken LoginDto.Response, issue LibraryDto.Data) Response {
 	return responseType
 }
 
-func GetInitialToken() string {
-	page, _ := http.Get("https://www.zinio.com/za/sign-in")
+func GetInitialToken() (token string, err error) {
+	page, err := http.Get("https://www.zinio.com/za/sign-in")
+	if err != nil {
+		fmt.Println("Unable to get initial token: " + err.Error())
+		return "", err
+	}
+
 	data, _ := ioutil.ReadAll(page.Body)
 
 	re := regexp.MustCompile(`"(jwt)":"((\\"|[^"])*)"`)
 
 	found := re.FindSubmatch(data)
 
-	return string(found[2])
+	return string(found[2]), nil
 }
 
 func GetLoginToken(initialToken string, username string, password string) LoginDto.Response{
