@@ -1,8 +1,8 @@
 package main
 
 import (
-	"LibraryDto"
-	"LoginDto"
+	"./src/LibraryDto"
+	"./src/LoginDto"
 	"bytes"
 	"encoding/json"
 	"flag"
