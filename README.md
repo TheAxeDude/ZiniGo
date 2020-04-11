@@ -1,6 +1,6 @@
 # ZiniGo
 
-A tool written in Go for saving (legally purchased) magazines from Zinio. 
+A tool written in Go for saving (legally purchased) magazines from Zinio as DRM-free PDFs. 
 
 ## Precompiled binaries
 
@@ -16,7 +16,7 @@ Google chrome installed, and accessible via the command `google-chrome`, or at a
 ## How it works
 ZiniGo logs into Zinio, and pulls a list of all issues purchased. 
 
-Each page is available as an SVG, which is then injected into n HTML page (based on template.html).
+Each page is available as an SVG, which is then injected into an HTML page (based on template.html).
 
 google-chrome is then used to print the page to PDF, and all pages are combined into a single PDF.
 
