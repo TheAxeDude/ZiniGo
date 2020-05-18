@@ -30,6 +30,7 @@ func main() {
 	usernamePtr := flag.String("u", "", "Zinio Username")
 	passwordPtr := flag.String("p", "", "Zinio Password")
 	chromePtr := flag.String("c", "google-chrome", "Chrome executable")
+	zinioHostPtr := flag.String("e", "api-sec.ziniopro.com", "Zinio Host (Excluding port and URI Scheme). Known: `api-sec`, `api-sec-2`")
 
 	flag.Parse()
 
@@ -39,24 +40,30 @@ func main() {
 		os.Exit(1)
 	}
 	loginToken := GetLoginToken(initialToken, *usernamePtr, *passwordPtr)
-	issues := GetLibrary(loginToken)
-	fmt.Println("Found " + strconv.Itoa(len(issues.Data))+ " issues in library.")
+	issues := GetLibrary(loginToken, *zinioHostPtr)
+	fmt.Println("Found " + strconv.Itoa(len(issues.Data)) + " issues in library.")
 
 	fmt.Println("Loading HTML template")
 	template, _ := ioutil.ReadFile("template.html")
-
+	mydir, err := os.Getwd()
+	if err != nil {
+		fmt.Println(err)
+	}
 	//fmt.Println("Grabbing list of pages...")
-	for _, issue := range issues.Data {
-		issuePath := "./issue/" + strconv.Itoa(issue.Id)
+	if _, err := os.Stat(mydir + "/issue/"); os.IsNotExist(err) {
+		os.Mkdir(mydir+"/issue/", os.ModeDir)
+	}
 
-		completeName := "./issue/" + issue.Publication.Name + " - " + issue.Name + ".pdf"
+	for _, issue := range issues.Data {
+		issuePath := mydir + "/issue/" + strconv.Itoa(issue.Id)
+
+		completeName := mydir + "/issue/" + issue.Publication.Name + " - " + issue.Name + ".pdf"
 		if fileExists(completeName) {
-			fmt.Println("Issue already found: "+ issue.Publication.Name + " - " + issue.Name)
+			fmt.Println("Issue already found: " + issue.Publication.Name + " - " + issue.Name)
 			continue
 		}
 
-
-		pages := GetPages(loginToken, issue)
+		pages := GetPages(loginToken, issue, *zinioHostPtr)
 
 		var filenames []string
 
@@ -68,7 +75,7 @@ func main() {
 
 			htmldata := strings.Replace(string(template), "SVG_PATH", pages.Data[i].Source, -1)
 			//write html file, embedding svg
-			ioutil.WriteFile(pathString  +".html", []byte(htmldata), 0644)
+			ioutil.WriteFile(pathString+".html", []byte(htmldata), 0644)
 
 			//convert to pdf
 
@@ -90,27 +97,22 @@ func main() {
 
 		_ = api.MergeCreateFile(filenames, completeName, nil)
 
-
-		for _, fileName := range filenames{
+		for _, fileName := range filenames {
 			_ = os.Remove(fileName)
 		}
 	}
 
-
-	//
-
 	fmt.Println("Terminating the application...")
 }
 
-func GetPages(userToken LoginResponse, issue LibraryData) Response {
+func GetPages(userToken LoginResponse, issue LibraryData, endpoint string) Response {
 
-	client := &http.Client{
-	}
+	client := &http.Client{}
 
-	req, _ := http.NewRequest("GET", "https://api-sec-2.ziniopro.com/newsstand/v2/newsstands/101/issues/"+strconv.Itoa(issue.Id)+"/content/pages?format=svg&application_id=9901&css_content=true&user_id="+ userToken.Data.User.UserIDString, nil)
+	req, _ := http.NewRequest("GET", "https://"+endpoint+"/newsstand/v2/newsstands/101/issues/"+strconv.Itoa(issue.Id)+"/content/pages?format=svg&application_id=9901&css_content=true&user_id="+userToken.Data.User.UserIDString, nil)
 
 	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("Authorization", "bearer " + userToken.Data.Token.AccessToken)
+	req.Header.Add("Authorization", "bearer "+userToken.Data.Token.AccessToken)
 
 	resp, _ := client.Do(req)
 	data, _ := ioutil.ReadAll(resp.Body)
@@ -138,11 +140,10 @@ func GetInitialToken() (token string, err error) {
 	return string(found[2]), nil
 }
 
-func GetLoginToken(initialToken string, username string, password string) LoginResponse{
-	client := &http.Client{
-	}
+func GetLoginToken(initialToken string, username string, password string) LoginResponse {
+	client := &http.Client{}
 
-	var jsonStr = []byte(`{"username":"`+username+`","password":"`+password+`"}`)
+	var jsonStr = []byte(`{"username":"` + username + `","password":"` + password + `"}`)
 	req, _ := http.NewRequest("POST", "https://www.zinio.com/api/login?project=99&logger=null", bytes.NewBuffer(jsonStr))
 
 	req.Header.Add("Content-Type", "application/json")
@@ -159,16 +160,20 @@ func GetLoginToken(initialToken string, username string, password string) LoginR
 
 }
 
-func GetLibrary(userToken LoginResponse) LibraryResponse{
-	client := &http.Client{
-	}
+func GetLibrary(userToken LoginResponse, endpoint string) LibraryResponse {
+	client := &http.Client{}
 
-	req, _ := http.NewRequest("GET", "https://api-sec-2.ziniopro.com/newsstand/v2/newsstands/101/users/"+ userToken.Data.User.UserIDString+"/library_issues", nil)
+	req, _ := http.NewRequest("GET", "https://"+endpoint+"/newsstand/v2/newsstands/101/users/"+userToken.Data.User.UserIDString+"/library_issues", nil)
 
 	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("Authorization", "bearer " + userToken.Data.Token.AccessToken)
+	req.Header.Add("Authorization", "bearer "+userToken.Data.Token.AccessToken)
 
-	resp, _ := client.Do(req)
+	resp, err := client.Do(req)
+
+	if err != nil {
+		fmt.Println("Unable to get Library: " + err.Error())
+	}
+
 	data, _ := ioutil.ReadAll(resp.Body)
 
 	responseType := LibraryResponse{}
@@ -184,4 +189,38 @@ func fileExists(filename string) bool {
 		return false
 	}
 	return !info.IsDir()
+}
+
+type LoginResponse struct {
+	Status bool      `json:"status"`
+	Data   LoginData `json:"data"`
+}
+
+type LoginData struct {
+	User         User   `json:"user"`
+	Token        Token  `json:"token"`
+	RefreshToken string `json:"refreshToken"`
+}
+
+type User struct {
+	UserIDString string `json:"user_id_string"`
+}
+
+type Token struct {
+	AccessToken string `json:"access_token"`
+}
+
+type LibraryResponse struct {
+	Status bool          `json:"status"`
+	Data   []LibraryData `json:"data"`
+}
+
+type LibraryData struct {
+	Id          int         `json:"id"`
+	Name        string      `json:"name"`
+	Publication Publication `json:"publication"`
+}
+
+type Publication struct {
+	Name string `json:"name"`
 }

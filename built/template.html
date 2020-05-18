@@ -1,0 +1,47 @@
+<html>
+<head>
+<!--<style>
+@media all {
+  @page { margin: 0px; }
+  body { margin-top: 0cm; 
+margin-left:auto;
+}
+
+
+}
+</style>-->
+	<style>
+		html, body {
+			width:  fit-content;
+			height: fit-content;
+			margin:  0px;
+			padding: 0px;
+		}
+	</style>
+
+	<style id=page_style>
+		@page { size: 100px 100px ; margin : 0px }
+	</style>
+</head>
+	<body>
+		<object type="image/svg+xml" data="SVG_PATH" ></object>
+
+	<script>
+	window.onload = fixpage;
+
+	function fixpage() {
+
+	     renderBlock = document.getElementsByTagName("html")[0];
+	     renderBlockInfo = window.getComputedStyle(renderBlock)
+
+	     // fix chrome page bug
+	     fixHeight = parseInt(renderBlockInfo.height) + 1 + "px"   
+
+	     pageCss = `@page { size: \${renderBlockInfo.width} \${fixHeight} ; margin:0;}`
+	     document.getElementById("page_style").innerHTML = pageCss
+	}
+	</script>
+	</body>
+
+
+</html>
