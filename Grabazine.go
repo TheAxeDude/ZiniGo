@@ -40,7 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 	loginToken := GetLoginToken(initialToken, *usernamePtr, *passwordPtr)
-	issues := GetLibrary(loginToken, *zinioHostPtr)
+	issues := GetLibrary(loginToken, initialToken, *zinioHostPtr)
 	fmt.Println("Found " + strconv.Itoa(len(issues.Data)) + " issues in library.")
 
 	fmt.Println("Loading HTML template")
@@ -63,7 +63,7 @@ func main() {
 			continue
 		}
 
-		pages := GetPages(loginToken, issue, *zinioHostPtr)
+		pages := GetPages(loginToken, issue, initialToken, *zinioHostPtr)
 
 		var filenames []string
 
@@ -105,14 +105,16 @@ func main() {
 	fmt.Println("Terminating the application...")
 }
 
-func GetPages(userToken LoginResponse, issue LibraryData, endpoint string) Response {
+func GetPages(userToken LoginResponse, issue LibraryData, token string, endpoint string) Response {
 
 	client := &http.Client{}
 
-	req, _ := http.NewRequest("GET", "https://"+endpoint+"/newsstand/v2/newsstands/101/issues/"+strconv.Itoa(issue.Id)+"/content/pages?format=svg&application_id=9901&css_content=true&user_id="+userToken.Data.User.UserIDString, nil)
+	//req, _ := http.NewRequest("GET", "https://"+endpoint+"/newsstand/v2/newsstands/134/issues/"+strconv.Itoa(issue.Id)+"/content/pages?format=svg&application_id=9901&css_content=true&user_id="+userToken.Data.User.UserIDString, nil)
+	req, _ := http.NewRequest("GET", "https://zinio.com/api/newsstand/newsstands/101/issues/"+strconv.Itoa(issue.Id)+"/content/pages?format=svg&application_id=9901&css_content=true&user_id="+userToken.Data.User.UserIDString, nil)
 
 	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("Authorization", "bearer "+userToken.Data.Token.AccessToken)
+	//req.Header.Add("Authorization", "bearer "+token)
+	req.Header.Add("Authorization", token)
 
 	resp, _ := client.Do(req)
 	data, _ := ioutil.ReadAll(resp.Body)
@@ -160,13 +162,14 @@ func GetLoginToken(initialToken string, username string, password string) LoginR
 
 }
 
-func GetLibrary(userToken LoginResponse, endpoint string) LibraryResponse {
+func GetLibrary(userToken LoginResponse, initialToken string, endpoint string) LibraryResponse {
 	client := &http.Client{}
 
-	req, _ := http.NewRequest("GET", "https://"+endpoint+"/newsstand/v2/newsstands/101/users/"+userToken.Data.User.UserIDString+"/library_issues", nil)
+	req, _ := http.NewRequest("GET", "https://zinio.com/api/newsstand/newsstands/101/users/"+userToken.Data.User.UserIDString+"/library_issues", nil)
 
 	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("Authorization", "bearer "+userToken.Data.Token.AccessToken)
+	//req.Header.Add("Authorization", "bearer "+userToken.Data.Token.AccessToken)
+	req.Header.Add("Authorization", initialToken)
 
 	resp, err := client.Do(req)
 
