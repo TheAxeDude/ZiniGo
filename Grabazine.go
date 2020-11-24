@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Response struct {
@@ -44,7 +45,14 @@ func main() {
 	fmt.Println("Found " + strconv.Itoa(len(issues.Data)) + " issues in library.")
 
 	fmt.Println("Loading HTML template")
+	defaultTemplate := "<html><head><!--<style>@media all{@page{margin: 0px;}body{margin-top: 0cm; margin-left:auto;}}</style>--><style>html, body{width: fit-content;height: fit-content;margin: 0px;padding: 0px;}</style><style id=page_style>@page{size: 100px 100px ; margin : 0px}</style></head><body><object type=\"image/svg+xml\" data=\"SVG_PATH\" ></object><script>window.onload=fixpage;function fixpage(){renderBlock=document.getElementsByTagName(\"html\")[0]; renderBlockInfo=window.getComputedStyle(renderBlock) // fix chrome page bug fixHeight=parseInt(renderBlockInfo.height) + 1 + \"px\" pageCss=`@page{size: \\${renderBlockInfo.width}\\${fixHeight}; margin:0;}` document.getElementById(\"page_style\").innerHTML=pageCss}</script></body></html>"
 	template, _ := ioutil.ReadFile("template.html")
+
+	if template == nil || len(template) == 0 {
+		fmt.Println("template.html not found, or empty. using built in template. Consider changing this if your files are cropped.")
+		template = []byte(defaultTemplate)
+	}
+
 	mydir, err := os.Getwd()
 	if err != nil {
 		fmt.Println(err)
@@ -79,7 +87,7 @@ func main() {
 
 			//convert to pdf
 
-			cmd := exec.Command(*chromePtr, "--headless", "--disable-gpu", "--print-to-pdf="+pathString+".pdf", pathString+".html")
+			cmd := exec.Command(*chromePtr, "--headless", "--disable-gpu", "--print-to-pdf="+pathString+".pdf", "--no-margins", pathString+".html")
 
 			fmt.Println(cmd.Args)
 			err := cmd.Run()
@@ -91,7 +99,18 @@ func main() {
 			_ = os.Remove(pathString + ".svg")
 
 			//remove last page
-			_ = api.RemovePagesFile(pathString+".pdf", "", []string{"2"}, nil)
+			err = retry(5, 2*time.Second, func() (err error) {
+				err = api.RemovePagesFile(pathString+".pdf", "", []string{"2-"}, nil)
+				if err != nil {
+					fmt.Printf("Removing extra pages failed with %s\n.", err)
+
+				} else {
+					fmt.Printf("Removed pages.")
+				}
+
+				return
+			})
+
 			filenames = append(filenames, pathString+".pdf")
 		}
 
@@ -226,4 +245,23 @@ type LibraryData struct {
 
 type Publication struct {
 	Name string `json:"name"`
+}
+
+//https://stackoverflow.com/questions/47606761/repeat-code-if-an-error-occured
+func retry(attempts int, sleep time.Duration, f func() error) (err error) {
+	for i := 0; ; i++ {
+		err = f()
+		if err == nil {
+			return
+		}
+
+		if i >= (attempts - 1) {
+			break
+		}
+
+		time.Sleep(sleep)
+
+		fmt.Println("retrying after error:", err)
+	}
+	return fmt.Errorf("after %d attempts, last error: %s", attempts, err)
 }
