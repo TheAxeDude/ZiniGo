@@ -20,3 +20,6 @@ Each page is available as an SVG, which is then injected into an HTML page (base
 
 google-chrome is then used to print the page to PDF, and all pages are combined into a single PDF.
 
+###Building
+Build for linux & windows on windows using the pwershell script in buildscripts
+

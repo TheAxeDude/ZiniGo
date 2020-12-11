@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	wkhtml "github.com/SebastiaanKlippert/go-wkhtmltopdf"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,6 +34,7 @@ func main() {
 	passwordPtr := flag.String("p", "", "Zinio Password")
 	chromePtr := flag.String("c", "google-chrome", "Chrome executable")
 	zinioHostPtr := flag.String("e", "api-sec.ziniopro.com", "Zinio Host (Excluding port and URI Scheme). Known: `api-sec`, `api-sec-2`")
+	exportUsingWKHTML := flag.String("wkhtml", "false", "Use WKHTML instead of Chrome to generate PDF (false by default)")
 
 	flag.Parse()
 
@@ -45,7 +48,7 @@ func main() {
 	fmt.Println("Found " + strconv.Itoa(len(issues.Data)) + " issues in library.")
 
 	fmt.Println("Loading HTML template")
-	defaultTemplate := "<html><head><!--<style>@media all{@page{margin: 0px;}body{margin-top: 0cm; margin-left:auto;}}</style>--><style>html, body{width: fit-content;height: fit-content;margin: 0px;padding: 0px;}</style><style id=page_style>@page{size: 100px 100px ; margin : 0px}</style></head><body><object type=\"image/svg+xml\" data=\"SVG_PATH\" ></object><script>window.onload=fixpage;function fixpage(){renderBlock=document.getElementsByTagName(\"html\")[0]; renderBlockInfo=window.getComputedStyle(renderBlock) // fix chrome page bug fixHeight=parseInt(renderBlockInfo.height) + 1 + \"px\" pageCss=`@page{size: \\${renderBlockInfo.width}\\${fixHeight}; margin:0;}` document.getElementById(\"page_style\").innerHTML=pageCss}</script></body></html>"
+	defaultTemplate := GetDefaultTemplate()
 	template, _ := ioutil.ReadFile("template.html")
 
 	if template == nil || len(template) == 0 {
@@ -71,6 +74,7 @@ func main() {
 			fmt.Println("Issue already found: " + issue.Publication.Name + " - " + issue.Name)
 			continue
 		}
+		fmt.Println("Downloading issue: " + issue.Publication.Name + " - " + issue.Name)
 
 		pages := GetPages(loginToken, issue, initialToken, *zinioHostPtr)
 
@@ -82,26 +86,72 @@ func main() {
 
 			pathString := issuePath + "_" + pages.Data[i].Index
 
-			htmldata := strings.Replace(string(template), "SVG_PATH", pages.Data[i].Source, -1)
-			//write html file, embedding svg
-			ioutil.WriteFile(pathString+".html", []byte(htmldata), 0644)
+			resp, err := http.Get(pages.Data[i].Source)
+			// handle the error if there is one
+			if err != nil {
+				panic(err)
+			}
+			// do this now so it won't be forgotten
+			defer resp.Body.Close()
+			// reads html as a slice of bytes
+			html, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				panic(err)
+			}
+			// show the HTML code as a string %s
+
+			htmldata := strings.Replace(string(template), "SVG_PATH", string(html), -1)
 
 			//convert to pdf
 
-			cmd := exec.Command(*chromePtr, "--headless", "--disable-gpu", "--print-to-pdf="+pathString+".pdf", "--no-margins", pathString+".html")
+			if strings.ToLower(*exportUsingWKHTML) == "true" {
 
-			fmt.Println(cmd.Args)
-			err := cmd.Run()
-			if err != nil {
-				fmt.Printf("cmd.Run() failed with %s\n. You should retry this page.", err)
+				pdfg, err := wkhtml.NewPDFGenerator()
+				if err != nil {
+					return
+				}
+				pdfg.MarginBottom.Set(0)
+				pdfg.MarginTop.Set(0)
+				pdfg.MarginLeft.Set(0)
+				pdfg.MarginRight.Set(0)
+				pdfg.NoOutline.Set(true)
+				//pdfg.PageSize.Set(wkhtml.PageSizeCustom)
+				pdfg.AddPage(wkhtml.NewPageReader(strings.NewReader(htmldata)))
+
+				// Create PDF document in internal buffer
+				err = pdfg.Create()
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				//Your Pdf Name
+				err = pdfg.WriteFile(pathString + ".pdf")
+				if err != nil {
+					log.Fatal(err)
+				}
+
+			} else {
+				//write html file, embedding svg
+				ioutil.WriteFile(pathString+".html", []byte(htmldata), 0644)
+				cmd := exec.Command(*chromePtr, "--headless", "--disable-gpu", "--print-to-pdf="+pathString+".pdf", "--no-margins", pathString+".html")
+				fmt.Println(cmd.Args)
+				err := cmd.Run()
+				if err != nil {
+					fmt.Printf("cmd.Run() failed with %s\n. You should retry this page.", err)
+				}
+
 			}
 
 			_ = os.Remove(pathString + ".html")
 			_ = os.Remove(pathString + ".svg")
 
+			filenames = append(filenames, pathString+".pdf")
+		}
+
+		for i := range filenames {
 			//remove last page
 			err = retry(5, 2*time.Second, func() (err error) {
-				err = api.RemovePagesFile(pathString+".pdf", "", []string{"2-"}, nil)
+				err = api.RemovePagesFile(filenames[i], "", []string{"2-"}, nil)
 				if err != nil {
 					fmt.Printf("Removing extra pages failed with %s\n.", err)
 
@@ -111,8 +161,6 @@ func main() {
 
 				return
 			})
-
-			filenames = append(filenames, pathString+".pdf")
 		}
 
 		_ = api.MergeCreateFile(filenames, completeName, nil)
@@ -265,4 +313,54 @@ func retry(attempts int, sleep time.Duration, f func() error) (err error) {
 		fmt.Println("retrying after error:", err)
 	}
 	return fmt.Errorf("after %d attempts, last error: %s", attempts, err)
+}
+
+func GetDefaultTemplate() string {
+	return `<html>
+	<head>
+	<!--<style>
+	@media all {
+		@page { margin: 0px; }
+		body { margin-top: 0cm;
+		margin-left:auto;
+	}
+
+
+	}
+	</style>-->
+	<style>
+		html, body {
+		width:  fit-content;
+		height: fit-content;
+		margin:  0px;
+		padding: 0px;
+	}
+	</style>
+
+	<style id=page_style>
+	@page { size: 100px 100px ; margin : 0px }
+	</style>
+	</head>
+	<body>
+	<object type="image/svg+xml" data="SVG_PATH" ></object>
+
+	<script>
+		window.onload = fixpage;
+
+	function fixpage() {
+
+		renderBlock = document.getElementsByTagName("html")[0];
+		renderBlockInfo = window.getComputedStyle(renderBlock)
+
+		// fix chrome page bug
+		fixHeight = parseInt(renderBlockInfo.height) + 1 + "px"
+
+		pageCss = '@page { size: \${renderBlockInfo.width} \${fixHeight} ; margin:0;}'
+		document.getElementById("page_style").innerHTML = pageCss
+	}
+	</script>
+	</body>
+
+
+	</html>`
 }
