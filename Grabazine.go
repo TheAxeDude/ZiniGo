@@ -45,132 +45,137 @@ func main() {
 	}
 	loginToken := GetLoginToken(initialToken, *usernamePtr, *passwordPtr)
 	issues := GetLibrary(loginToken, initialToken, *zinioHostPtr)
-	fmt.Println("Found " + strconv.Itoa(len(issues.Data)) + " issues in library.")
+	for i := range issues {
+		issueList := issues[i]
+		//fmt.Println("Found " + strconv.Itoa(len(issues.Data)) + " issues in library.")
 
-	fmt.Println("Loading HTML template")
-	defaultTemplate := GetDefaultTemplate()
-	template, _ := ioutil.ReadFile("template.html")
+		fmt.Println("Loading HTML template")
+		defaultTemplate := GetDefaultTemplate()
+		template, _ := ioutil.ReadFile("template.html")
 
-	if template == nil || len(template) == 0 {
-		fmt.Println("template.html not found, or empty. using built in template. Consider changing this if your files are cropped.")
-		template = []byte(defaultTemplate)
-	}
-
-	mydir, err := os.Getwd()
-	if err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println("Resolved working directory to: " + mydir)
-	//fmt.Println("Grabbing list of pages...")
-	if _, err := os.Stat(mydir + "/issue/"); os.IsNotExist(err) {
-		os.Mkdir(mydir+"/issue/", os.ModeDir)
-	}
-
-	for _, issue := range issues.Data {
-		issuePath := mydir + "/issue/" + strconv.Itoa(issue.Id)
-
-		completeName := mydir + "/issue/" + issue.Publication.Name + " - " + issue.Name + ".pdf"
-		if fileExists(completeName) {
-			fmt.Println("Issue already found: " + issue.Publication.Name + " - " + issue.Name)
-			continue
-		}
-		fmt.Println("Downloading issue: " + issue.Publication.Name + " - " + issue.Name)
-
-		pages := GetPages(loginToken, issue, initialToken, *zinioHostPtr)
-
-		var filenames []string
-
-		for i := 0; i < len(pages.Data); i++ {
-			fmt.Println("Source ", pages.Data[i].Source)
-			fmt.Println("ID: ", pages.Data[i].Index)
-
-			pathString := issuePath + "_" + pages.Data[i].Index
-
-			resp, err := http.Get(pages.Data[i].Source)
-			// handle the error if there is one
-			if err != nil {
-				panic(err)
-			}
-			// do this now so it won't be forgotten
-			defer resp.Body.Close()
-			// reads html as a slice of bytes
-			html, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				panic(err)
-			}
-			// show the HTML code as a string %s
-
-			htmldata := strings.Replace(string(template), "SVG_PATH", string(html), -1)
-
-			//convert to pdf
-
-			if strings.ToLower(*exportUsingWKHTML) == "true" {
-
-				pdfg, err := wkhtml.NewPDFGenerator()
-				if err != nil {
-					return
-				}
-				pdfg.MarginBottom.Set(0)
-				pdfg.MarginTop.Set(0)
-				pdfg.MarginLeft.Set(0)
-				pdfg.MarginRight.Set(0)
-				pdfg.NoOutline.Set(true)
-				//pdfg.PageSize.Set(wkhtml.PageSizeCustom)
-				pdfg.AddPage(wkhtml.NewPageReader(strings.NewReader(htmldata)))
-
-				// Create PDF document in internal buffer
-				err = pdfg.Create()
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				//Your Pdf Name
-				err = pdfg.WriteFile(pathString + ".pdf")
-				if err != nil {
-					log.Fatal(err)
-				}
-
-			} else {
-				//write html file, embedding svg
-				ioutil.WriteFile(pathString+".html", []byte(htmldata), 0644)
-				cmd := exec.Command(*chromePtr, "--headless", "--disable-gpu", "--print-to-pdf="+pathString+".pdf", "--no-margins", pathString+".html")
-				fmt.Println(cmd.Args)
-				err := cmd.Run()
-				if err != nil {
-					fmt.Printf("cmd.Run() failed with %s\n. You should retry this page.", err)
-				}
-
-			}
-
-			_ = os.Remove(pathString + ".html")
-			_ = os.Remove(pathString + ".svg")
-
-			filenames = append(filenames, pathString+".pdf")
+		if template == nil || len(template) == 0 {
+			fmt.Println("template.html not found, or empty. using built in template. Consider changing this if your files are cropped.")
+			template = []byte(defaultTemplate)
 		}
 
-		for i := range filenames {
-			//remove last page
-			err = retry(5, 2*time.Second, func() (err error) {
-				err = api.RemovePagesFile(filenames[i], "", []string{"2-"}, nil)
+		mydir, err := os.Getwd()
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println("Resolved working directory to: " + mydir)
+		//fmt.Println("Grabbing list of pages...")
+		if _, err := os.Stat(mydir + "/issue/"); os.IsNotExist(err) {
+			os.Mkdir(mydir+"/issue/", os.ModeDir)
+		}
+
+		for _, issue := range issueList.Data {
+			issuePath := mydir + "/issue/" + strconv.Itoa(issue.Id)
+
+			completeName := mydir + "/issue/" + issue.Publication.Name + " - " + issue.Name + ".pdf"
+			if fileExists(completeName) {
+				fmt.Println("Issue already found: " + issue.Publication.Name + " - " + issue.Name)
+				continue
+			}
+			fmt.Println("Downloading issue: " + issue.Publication.Name + " - " + issue.Name)
+
+			pages := GetPages(loginToken, issue, initialToken, *zinioHostPtr)
+
+			var filenames []string
+
+			for i := 0; i < len(pages.Data); i++ {
+				fmt.Println("Source ", pages.Data[i].Source)
+				fmt.Println("ID: ", pages.Data[i].Index)
+
+				pathString := issuePath + "_" + pages.Data[i].Index
+
+				resp, err := http.Get(pages.Data[i].Source)
+				// handle the error if there is one
 				if err != nil {
-					fmt.Printf("Removing extra pages failed with %s\n.", err)
+					panic(err)
+				}
+				// do this now so it won't be forgotten
+				defer resp.Body.Close()
+				// reads html as a slice of bytes
+				html, err := ioutil.ReadAll(resp.Body)
+				if err != nil {
+					panic(err)
+				}
+				// show the HTML code as a string %s
+
+				htmldata := strings.Replace(string(template), "SVG_PATH", string(html), -1)
+
+				//convert to pdf
+
+				if strings.ToLower(*exportUsingWKHTML) == "true" {
+
+					pdfg, err := wkhtml.NewPDFGenerator()
+					if err != nil {
+						return
+					}
+					pdfg.MarginBottom.Set(0)
+					pdfg.MarginTop.Set(0)
+					pdfg.MarginLeft.Set(0)
+					pdfg.MarginRight.Set(0)
+					pdfg.NoOutline.Set(true)
+					//pdfg.PageSize.Set(wkhtml.PageSizeCustom)
+					pdfg.AddPage(wkhtml.NewPageReader(strings.NewReader(htmldata)))
+
+					// Create PDF document in internal buffer
+					err = pdfg.Create()
+					if err != nil {
+						log.Fatal(err)
+					}
+
+					//Your Pdf Name
+					err = pdfg.WriteFile(pathString + ".pdf")
+					if err != nil {
+						log.Fatal(err)
+					}
 
 				} else {
-					fmt.Printf("Removed pages.")
+					//write html file, embedding svg
+					ioutil.WriteFile(pathString+".html", []byte(htmldata), 0644)
+					cmd := exec.Command(*chromePtr, "--headless", "--disable-gpu", "--print-to-pdf="+pathString+".pdf", "--no-margins", pathString+".html")
+					fmt.Println(cmd.Args)
+					err := cmd.Run()
+					if err != nil {
+						fmt.Printf("cmd.Run() failed with %s\n. You should retry this page.", err)
+					}
+
 				}
 
-				return
-			})
+				_ = os.Remove(pathString + ".html")
+				_ = os.Remove(pathString + ".svg")
+
+				filenames = append(filenames, pathString+".pdf")
+			}
+
+			for i := range filenames {
+				//remove last page
+				err = retry(5, 2*time.Second, func() (err error) {
+					err = api.RemovePagesFile(filenames[i], "", []string{"2-"}, nil)
+					if err != nil {
+						fmt.Printf("Removing extra pages failed with %s\n.", err)
+
+					} else {
+						fmt.Printf("Removed pages.")
+					}
+
+					return
+				})
+			}
+
+			_ = api.MergeCreateFile(filenames, completeName, nil)
+
+			for _, fileName := range filenames {
+				_ = os.Remove(fileName)
+			}
 		}
 
-		_ = api.MergeCreateFile(filenames, completeName, nil)
-
-		for _, fileName := range filenames {
-			_ = os.Remove(fileName)
-		}
 	}
 
 	fmt.Println("Terminating the application...")
+
 }
 
 func GetPages(userToken LoginResponse, issue LibraryData, token string, endpoint string) Response {
@@ -230,28 +235,41 @@ func GetLoginToken(initialToken string, username string, password string) LoginR
 
 }
 
-func GetLibrary(userToken LoginResponse, initialToken string, endpoint string) LibraryResponse {
+func GetLibrary(userToken LoginResponse, initialToken string, endpoint string) []LibraryResponse {
 	client := &http.Client{}
 
-	req, _ := http.NewRequest("GET", "https://zinio.com/api/newsstand/newsstands/101/users/"+userToken.Data.User.UserIDString+"/library_issues", nil)
+	var itemsToReturn []LibraryResponse
+	issuesToFetch := 120
 
-	req.Header.Add("Content-Type", "application/json")
-	//req.Header.Add("Authorization", "bearer "+userToken.Data.Token.AccessToken)
-	req.Header.Add("Authorization", initialToken)
+	pageToFetch := 1
+	for {
+		req, _ := http.NewRequest("GET", "https://zinio.com/api/newsstand/newsstands/101/users/"+userToken.Data.User.UserIDString+"/library_issues?limit="+strconv.Itoa(issuesToFetch)+"&page="+strconv.Itoa(pageToFetch), nil)
 
-	resp, err := client.Do(req)
+		req.Header.Add("Content-Type", "application/json")
+		//req.Header.Add("Authorization", "bearer "+userToken.Data.Token.AccessToken)
+		req.Header.Add("Authorization", initialToken)
 
-	if err != nil {
-		fmt.Println("Unable to get Library: " + err.Error())
+		resp, err := client.Do(req)
+
+		if err != nil {
+			fmt.Println("Unable to get Library: " + err.Error())
+		}
+
+		data, _ := ioutil.ReadAll(resp.Body)
+
+		responseType := LibraryResponse{}
+
+		_ = json.Unmarshal(data, &responseType)
+
+		if len(responseType.Data) > 0 {
+			itemsToReturn = append(itemsToReturn, responseType)
+			pageToFetch++
+		} else {
+			break
+		}
 	}
 
-	data, _ := ioutil.ReadAll(resp.Body)
-
-	responseType := LibraryResponse{}
-
-	_ = json.Unmarshal(data, &responseType)
-
-	return responseType
+	return itemsToReturn
 }
 
 func fileExists(filename string) bool {
