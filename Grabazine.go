@@ -65,7 +65,7 @@ func main() {
 		fmt.Println("Resolved working directory to: " + mydir)
 		//fmt.Println("Grabbing list of pages...")
 		if _, err := os.Stat(mydir + "/issue/"); os.IsNotExist(err) {
-			os.Mkdir(mydir+"/issue/", os.ModeDir)
+			os.Mkdir(mydir+"/issue/", 0600)
 		}
 
 		for _, issue := range issueList.Data {
