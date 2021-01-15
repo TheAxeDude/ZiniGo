@@ -71,12 +71,15 @@ func main() {
 		for _, issue := range issueList.Data {
 			issuePath := mydir + "/issue/" + strconv.Itoa(issue.Id)
 
-			completeName := mydir + "/issue/" + issue.Publication.Name + " - " + issue.Name + ".pdf"
+			publicationName := RemoveBadCharacters(issue.Publication.Name)
+			issueName := RemoveBadCharacters(issue.Name)
+
+			completeName := mydir + "/issue/" + publicationName + " - " + issueName + ".pdf"
 			if fileExists(completeName) {
-				fmt.Println("Issue already found: " + issue.Publication.Name + " - " + issue.Name)
+				fmt.Println("Issue already found: " + completeName)
 				continue
 			}
-			fmt.Println("Downloading issue: " + issue.Publication.Name + " - " + issue.Name)
+			fmt.Println("Downloading issue: " + publicationName + " - " + issueName)
 
 			pages := GetPages(loginToken, issue, initialToken, *zinioHostPtr)
 
@@ -156,7 +159,6 @@ func main() {
 					err = api.RemovePagesFile(filenames[i], "", []string{"2-"}, nil)
 					if err != nil {
 						fmt.Printf("Removing extra pages failed with %s\n.", err)
-
 					}
 
 					return
@@ -379,4 +381,16 @@ func GetDefaultTemplate() string {
 
 
 	</html>`
+}
+
+var badCharacters = []string{"/", "\\", "<", ">", ":", "\"", "|", "?", "*"}
+
+func RemoveBadCharacters(input string) string {
+
+	temp := input
+
+	for _, badChar := range badCharacters {
+		temp = strings.Replace(temp, badChar, "_", -1)
+	}
+	return temp
 }
