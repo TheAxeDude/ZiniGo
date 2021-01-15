@@ -157,8 +157,6 @@ func main() {
 					if err != nil {
 						fmt.Printf("Removing extra pages failed with %s\n.", err)
 
-					} else {
-						fmt.Printf("Removed pages.")
 					}
 
 					return
