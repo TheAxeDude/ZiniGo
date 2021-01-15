@@ -7,6 +7,7 @@ import (
 	"fmt"
 	wkhtml "github.com/SebastiaanKlippert/go-wkhtmltopdf"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/tidwall/gjson"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -38,6 +39,34 @@ func main() {
 
 	flag.Parse()
 
+	mydir, err := os.Getwd()
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	if fileExists(mydir + "/config.json") {
+		fmt.Println("Config file loaded")
+		byteValue, _ := ioutil.ReadFile("config.json")
+		username := gjson.GetBytes(byteValue, "username")
+		if username.Exists() {
+			*usernamePtr = username.String()
+			fmt.Println("Username taken from config file")
+		}
+
+		password := gjson.GetBytes(byteValue, "password")
+		if password.Exists() {
+			*passwordPtr = password.String()
+			fmt.Println("password taken from config file")
+		}
+
+		chrome := gjson.GetBytes(byteValue, "chromepath")
+		if chrome.Exists() {
+			*chromePtr = chrome.String()
+			fmt.Println("chromepath taken from config file")
+		}
+
+	}
+
 	fmt.Println("Starting the application...")
 	initialToken, err := GetInitialToken()
 	if err != nil {
@@ -58,10 +87,6 @@ func main() {
 			template = []byte(defaultTemplate)
 		}
 
-		mydir, err := os.Getwd()
-		if err != nil {
-			fmt.Println(err)
-		}
 		fmt.Println("Resolved working directory to: " + mydir)
 		//fmt.Println("Grabbing list of pages...")
 		if _, err := os.Stat(mydir + "/issue/"); os.IsNotExist(err) {
