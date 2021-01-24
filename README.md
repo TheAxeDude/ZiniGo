@@ -10,6 +10,8 @@ ZiniGo can be downloaded for Windows and Linux at https://github.com/TheAxeDude/
 
 ./zinigo -u=Username -p=Password [-c=/path/to/chrome/executable]
 
+You can also add these properties to a config file in the working directory, instead of passing them in manually. See the sample at https://github.com/TheAxeDude/ZiniGo/blob/master/config.json
+
 ## Requirements
 Google chrome installed, and accessible via the command `google-chrome`, or at a location passed in via the -c parameter.
 
@@ -20,6 +22,6 @@ Each page is available as an SVG, which is then injected into an HTML page (base
 
 google-chrome is then used to print the page to PDF, and all pages are combined into a single PDF.
 
-###Building
+## Building
 Build for linux & windows on windows using the pwershell script in buildscripts
 
