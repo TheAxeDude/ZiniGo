@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	wkhtml "github.com/SebastiaanKlippert/go-wkhtmltopdf"
+	"github.com/icza/gox/stringsx"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/tidwall/gjson"
 	"io/ioutil"
@@ -418,5 +419,8 @@ func RemoveBadCharacters(input string) string {
 	for _, badChar := range badCharacters {
 		temp = strings.Replace(temp, badChar, "_", -1)
 	}
+
+	temp = stringsx.Clean(temp)
+
 	return temp
 }
