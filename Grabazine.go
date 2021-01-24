@@ -100,6 +100,7 @@ func main() {
 			issueName := RemoveBadCharacters(issue.Name)
 
 			completeName := mydir + "/issue/" + publicationName + " - " + issueName + ".pdf"
+			fmt.Println("Checking if issue exists: " + completeName)
 			if fileExists(completeName) {
 				fmt.Println("Issue already found: " + completeName)
 				continue
