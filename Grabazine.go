@@ -385,7 +385,7 @@ func GetDefaultTemplate() string {
 	</style>
 	</head>
 	<body>
-	<object type="image/svg+xml" data="SVG_PATH" ></object>
+	<object type="image/svg+xml" data="SVG_PATH</object>
 
 	<script>
 		window.onload = fixpage;
@@ -398,7 +398,7 @@ func GetDefaultTemplate() string {
 		// fix chrome page bug
 		fixHeight = parseInt(renderBlockInfo.height) + 1 + "px"
 
-		pageCss = '@page { size: \${renderBlockInfo.width} \${fixHeight} ; margin:0;}'
+		pageCss = "@page { size: " + renderBlockInfo.width + " " + fixHeight +" ; margin:0;}"
 		document.getElementById("page_style").innerHTML = pageCss
 	}
 	</script>
