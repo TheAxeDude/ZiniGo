@@ -113,6 +113,11 @@ func main() {
 			var filenames []string
 
 			for i := 0; i < len(pages.Data); i++ {
+				if len(pages.Data[i].Source) == 0 {
+
+					fmt.Println("No Download URL for page ", i)
+					continue
+				}
 				fmt.Println("Source ", pages.Data[i].Source)
 				fmt.Println("ID: ", pages.Data[i].Index)
 
