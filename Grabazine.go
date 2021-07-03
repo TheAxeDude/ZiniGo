@@ -7,6 +7,7 @@ import (
 	"fmt"
 	wkhtml "github.com/SebastiaanKlippert/go-wkhtmltopdf"
 	"github.com/icza/gox/stringsx"
+	"github.com/mxschmitt/playwright-go"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/tidwall/gjson"
 	"io/ioutil"
@@ -37,6 +38,7 @@ func main() {
 	chromePtr := flag.String("c", "google-chrome", "Chrome executable")
 	zinioHostPtr := flag.String("e", "api-sec.ziniopro.com", "Zinio Host (Excluding port and URI Scheme). Known: `api-sec`, `api-sec-2`")
 	exportUsingWKHTML := flag.String("wkhtml", "false", "Use WKHTML instead of Chrome to generate PDF (false by default)")
+	exportUsingPlaywright := flag.String("playwright", "false", "Use Playwright Chromium instead of local Chrome to generate PDF (false by default)")
 
 	flag.Parse()
 
@@ -68,13 +70,13 @@ func main() {
 
 	}
 
-	fmt.Println("Starting the application...")
-	initialToken, err := GetInitialToken()
-	if err != nil {
-		os.Exit(1)
-	}
-	loginToken := GetLoginToken(initialToken, *usernamePtr, *passwordPtr)
-	issues := GetLibrary(loginToken, initialToken, *zinioHostPtr)
+	//fmt.Println("Starting the application...")
+	//initialToken, err := GetInitialToken()
+	//if err != nil {
+	//	os.Exit(1)
+	//}
+	loginToken := GetLoginToken(*usernamePtr, *passwordPtr)
+	issues := GetLibrary(loginToken, *zinioHostPtr)
 	for i := range issues {
 		issueList := issues[i]
 		//fmt.Println("Found " + strconv.Itoa(len(issues.Data)) + " issues in library.")
@@ -84,7 +86,7 @@ func main() {
 		template, _ := ioutil.ReadFile("template.html")
 
 		if template == nil || len(template) == 0 {
-			fmt.Println("template.html not found, or empty. using built in template. Consider changing this if your files are cropped.")
+			fmt.Println("template.html not found, or empty. using issue in template. Consider changing this if your files are cropped.")
 			template = []byte(defaultTemplate)
 		}
 
@@ -108,7 +110,7 @@ func main() {
 			}
 			fmt.Println("Downloading issue: " + publicationName + " - " + issueName)
 
-			pages := GetPages(loginToken, issue, initialToken, *zinioHostPtr)
+			pages := GetPages(loginToken, issue, *zinioHostPtr)
 
 			var filenames []string
 
@@ -141,7 +143,24 @@ func main() {
 
 				//convert to pdf
 
-				if strings.ToLower(*exportUsingWKHTML) == "true" {
+				if strings.ToLower(*exportUsingPlaywright) == "true" {
+					pw, err := playwright.Run()
+					if err != nil {
+						log.Fatalf("could not start playwright: %v", err)
+					}
+					browser, err := pw.Chromium.Launch()
+					if err != nil {
+						log.Fatalf("could not launch browser: %v", err)
+					}
+					context, err := browser.NewContext()
+
+					page, err := context.NewPage()
+					_ = page.SetContent(htmldata, playwright.PageSetContentOptions{WaitUntil: playwright.WaitUntilStateNetworkidle})
+					_, err = page.PDF(playwright.PagePdfOptions{
+						Path: playwright.String(pathString + ".pdf"),
+					})
+
+				} else if strings.ToLower(*exportUsingWKHTML) == "true" {
 
 					pdfg, err := wkhtml.NewPDFGenerator()
 					if err != nil {
@@ -210,7 +229,7 @@ func main() {
 
 }
 
-func GetPages(userToken LoginResponse, issue LibraryData, token string, endpoint string) Response {
+func GetPages(userToken LoginResponse, issue LibraryData, endpoint string) Response {
 
 	client := &http.Client{}
 
@@ -218,8 +237,10 @@ func GetPages(userToken LoginResponse, issue LibraryData, token string, endpoint
 	req, _ := http.NewRequest("GET", "https://zinio.com/api/newsstand/newsstands/101/issues/"+strconv.Itoa(issue.Id)+"/content/pages?format=svg&application_id=9901&css_content=true&user_id="+userToken.Data.User.UserIDString, nil)
 
 	req.Header.Add("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "zwrt", Value: userToken.Data.AccessToken})
+
 	//req.Header.Add("Authorization", "bearer "+token)
-	req.Header.Add("Authorization", token)
+	//req.Header.Add("Authorization", token)
 
 	resp, _ := client.Do(req)
 	data, _ := ioutil.ReadAll(resp.Body)
@@ -247,14 +268,14 @@ func GetInitialToken() (token string, err error) {
 	return string(found[2]), nil
 }
 
-func GetLoginToken(initialToken string, username string, password string) LoginResponse {
+func GetLoginToken(username string, password string) LoginResponse {
 	client := &http.Client{}
 
 	var jsonStr = []byte(`{"username":"` + username + `","password":"` + password + `"}`)
 	req, _ := http.NewRequest("POST", "https://www.zinio.com/api/login?project=99&logger=null", bytes.NewBuffer(jsonStr))
 
 	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("Authorization", initialToken)
+	//req.Header.Add("Authorization", initialToken)
 
 	resp, _ := client.Do(req)
 	data, _ := ioutil.ReadAll(resp.Body)
@@ -263,11 +284,20 @@ func GetLoginToken(initialToken string, username string, password string) LoginR
 
 	_ = json.Unmarshal([]byte(data), &responseType)
 
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == "zwrt" {
+			responseType.Data.AccessToken = cookie.Value
+		}
+		if cookie.Name == "zwrrt" {
+			responseType.Data.RefreshToken = cookie.Value
+		}
+	}
+
 	return responseType
 
 }
 
-func GetLibrary(userToken LoginResponse, initialToken string, endpoint string) []LibraryResponse {
+func GetLibrary(userToken LoginResponse, endpoint string) []LibraryResponse {
 	client := &http.Client{}
 
 	var itemsToReturn []LibraryResponse
@@ -278,8 +308,9 @@ func GetLibrary(userToken LoginResponse, initialToken string, endpoint string) [
 		req, _ := http.NewRequest("GET", "https://zinio.com/api/newsstand/newsstands/101/users/"+userToken.Data.User.UserIDString+"/library_issues?limit="+strconv.Itoa(issuesToFetch)+"&page="+strconv.Itoa(pageToFetch), nil)
 
 		req.Header.Add("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: "zwrt", Value: userToken.Data.AccessToken})
 		//req.Header.Add("Authorization", "bearer "+userToken.Data.Token.AccessToken)
-		req.Header.Add("Authorization", initialToken)
+		//req.Header.Add("Authorization", initialToken)
 
 		resp, err := client.Do(req)
 
@@ -321,6 +352,7 @@ type LoginData struct {
 	User         User   `json:"user"`
 	Token        Token  `json:"token"`
 	RefreshToken string `json:"refreshToken"`
+	AccessToken  string
 }
 
 type User struct {
