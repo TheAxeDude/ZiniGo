@@ -7,7 +7,8 @@ require (
 	github.com/icza/gox v0.0.0-20220921190100-610a6663952b
 	github.com/pdfcpu/pdfcpu v0.3.13
 	github.com/playwright-community/playwright-go v0.2000.1
-	github.com/tidwall/gjson v1.14.3
+	github.com/tidwall/gjson v1.16.0
+	github.com/tidwall/sjson v1.2.5
 )
 
 require (
@@ -18,7 +19,7 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.0 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
 	golang.org/x/image v0.0.0-20210220032944-ac19c3e999fb // indirect
 	golang.org/x/text v0.3.6 // indirect
 	gopkg.in/square/go-jose.v2 v2.6.0 // indirect

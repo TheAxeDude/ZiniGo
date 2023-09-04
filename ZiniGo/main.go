@@ -10,12 +10,14 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/playwright-community/playwright-go"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,6 +42,7 @@ func main() {
 	zinioHostPtr := flag.String("e", "api-sec.ziniopro.com", "Zinio Host (Excluding port and URI Scheme). Known: `api-sec`, `api-sec-2`")
 	exportUsingWKHTML := flag.String("wkhtml", "false", "Use WKHTML instead of Chrome to generate PDF (false by default)")
 	exportUsingPlaywright := flag.String("playwright", "false", "Use Playwright Chromium instead of local Chrome to generate PDF (false by default)")
+	deviceFingerprintPtr := flag.String("fingerprint", "abcd123", "This devices fingerprint - presented to Zinio API")
 
 	flag.Parse()
 
@@ -69,6 +72,20 @@ func main() {
 			fmt.Println("chromepath taken from config file")
 		}
 
+		fingerprint := gjson.GetBytes(byteValue, "fingerprint")
+		if fingerprint.Exists() {
+			*deviceFingerprintPtr = fingerprint.String()
+			fmt.Println("Fingerprint taken from config file")
+		} else {
+			fmt.Println("No fingerprint found in text file, generating and writing")
+			newJson, _ := sjson.Set(string(byteValue), "fingerprint", randSeq(15))
+
+			err := ioutil.WriteFile("config.json", []byte(newJson), 0644)
+			if err != nil {
+				log.Fatalf("unable to write file: %v", err)
+			}
+		}
+
 	}
 
 	//fmt.Println("Starting the application...")
@@ -76,7 +93,7 @@ func main() {
 	//if err != nil {
 	//	os.Exit(1)
 	//}
-	loginToken := GetLoginToken(*usernamePtr, *passwordPtr)
+	loginToken := GetLoginToken(*usernamePtr, *passwordPtr, *deviceFingerprintPtr)
 	issues := GetLibrary(loginToken, *zinioHostPtr)
 	for i := range issues {
 		issueList := issues[i]
@@ -93,17 +110,19 @@ func main() {
 
 		fmt.Println("Resolved working directory to: " + mydir)
 		//fmt.Println("Grabbing list of pages...")
-		if _, err := os.Stat(mydir + "/issue/"); os.IsNotExist(err) {
-			os.Mkdir(mydir+"/issue/", 0600)
+		issueDirectory := filepath.Join(mydir, "issue")
+		if _, err := os.Stat(issueDirectory); os.IsNotExist(err) {
+			os.Mkdir(issueDirectory, 0600)
 		}
 
 		for _, issue := range issueList.Data {
-			issuePath := mydir + "/issue/" + strconv.Itoa(issue.Id)
+			fmt.Println(issue)
+			issuePath := filepath.Join(issueDirectory, strconv.Itoa(issue.Id))
 
 			publicationName := RemoveBadCharacters(issue.Publication.Name)
 			issueName := RemoveBadCharacters(issue.Name)
 
-			completeName := mydir + "/issue/" + publicationName + " - " + issueName + ".pdf"
+			completeName := filepath.Join(issueDirectory, publicationName+" - "+issueName+".pdf")
 			fmt.Println("Checking if issue exists: " + completeName)
 			if fileExists(completeName) {
 				fmt.Println("Issue already found: " + completeName)
@@ -273,13 +292,13 @@ func GetInitialToken() (token string, err error) {
 	return string(found[2]), nil
 }
 
-func GetLoginToken(username string, password string) LoginResponse {
+func GetLoginToken(username string, password string, fingerprint string) LoginResponse {
 	fmt.Println("GettingLogin")
 
 	client := &http.Client{}
 
-	var jsonStr = []byte(`{"username":"` + username + `","password":"` + password + `","device":{"name":"Windows Chrome","fingerprint":"` + randSeq(32) + `","device_type":"Desktop","client_type":"Web"},"newsstand":{"currency":"ZAR","id":134,"country":"ZA","name":"South Africa","cc":"za","localeCode":"en_ZA","userLang":"en_ZA","userCountry":"ZA","userCurrency":"ZAR","requiresCookies":true,"requiresExplicitConsent":true,"requiresAdultConfirmation":true,"adWords":{"id":1,"label":""},"isDefaultNewsstand":false}}`)
-	//fmt.Println(string(jsonStr))
+	var jsonStr = []byte(`{"email":"` + username + `","password":"` + password + `","device":{"name":"Windows Chrome","fingerprint":"` + fingerprint + `","device_type":"Desktop","client_type":"Web"},"newsstand":{"currency":"ZAR","id":134,"country":"ZA","name":"South Africa","cc":"za","localeCode":"en_ZA","userLang":"en_ZA","userCountry":"ZA","userCurrency":"ZAR","requiresCookies":true,"requiresExplicitConsent":true,"requiresAdultConfirmation":true,"adWords":{"id":1,"label":""},"isDefaultNewsstand":false}}`)
+	fmt.Println(string(jsonStr))
 
 	req, _ := http.NewRequest("POST", "https://www.zinio.com/api/login?project=99&logger=null", bytes.NewBuffer(jsonStr))
 
