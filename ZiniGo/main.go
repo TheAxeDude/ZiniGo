@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	wkhtml "github.com/SebastiaanKlippert/go-wkhtmltopdf"
 	"github.com/icza/gox/stringsx"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/playwright-community/playwright-go"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"io/ioutil"
@@ -16,7 +15,6 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -40,8 +38,8 @@ func main() {
 	passwordPtr := flag.String("p", "", "Zinio Password")
 	chromePtr := flag.String("c", "google-chrome", "Chrome executable")
 	zinioHostPtr := flag.String("e", "api-sec.ziniopro.com", "Zinio Host (Excluding port and URI Scheme). Known: `api-sec`, `api-sec-2`")
-	exportUsingWKHTML := flag.String("wkhtml", "false", "Use WKHTML instead of Chrome to generate PDF (false by default)")
-	exportUsingPlaywright := flag.String("playwright", "false", "Use Playwright Chromium instead of local Chrome to generate PDF (false by default)")
+	//exportUsingWKHTML := flag.String("wkhtml", "false", "Use WKHTML instead of Chrome to generate PDF (false by default)")
+	//exportUsingPlaywright := flag.String("playwright", "false", "Use Playwright Chromium instead of local Chrome to generate PDF (false by default)")
 	deviceFingerprintPtr := flag.String("fingerprint", "abcd123", "This devices fingerprint - presented to Zinio API")
 
 	flag.Parse()
@@ -97,6 +95,7 @@ func main() {
 	issues := GetLibrary(loginToken, *zinioHostPtr)
 	for i := range issues {
 		issueList := issues[i]
+
 		//fmt.Println("Found " + strconv.Itoa(len(issues.Data)) + " issues in library.")
 
 		fmt.Println("Loading HTML template")
@@ -116,6 +115,13 @@ func main() {
 		}
 
 		for _, issue := range issueList.Data {
+
+			issueDetails := GetIssueDetails(loginToken, issue.Id)
+			isLegacy := issueDetails.Data.Issue.Publication.LegacyContent == 1
+			passwordToUse := issueDetails.Data.Issue.Hash
+			if isLegacy {
+				passwordToUse = issueDetails.Data.Issue.LegacyHash
+			}
 			fmt.Println(issue)
 			issuePath := filepath.Join(issueDirectory, strconv.Itoa(issue.Id))
 
@@ -133,19 +139,19 @@ func main() {
 			pages := GetPages(loginToken, issue, *zinioHostPtr)
 
 			var filenames []string
-
+			conf := pdfcpu.NewAESConfiguration(passwordToUse, passwordToUse, 256)
 			for i := 0; i < len(pages.Data); i++ {
-				if len(pages.Data[i].Source) == 0 {
+				if len(pages.Data[i].Src) == 0 {
 
 					fmt.Println("No Download URL for page ", i)
 					continue
 				}
-				fmt.Println("Source ", pages.Data[i].Source)
+				fmt.Println("Source ", pages.Data[i].Src)
 				fmt.Println("ID: ", pages.Data[i].Index)
 
 				pathString := issuePath + "_" + pages.Data[i].Index
 
-				resp, err := http.Get(pages.Data[i].Source)
+				resp, err := http.Get(pages.Data[i].Src)
 				// handle the error if there is one
 				if err != nil {
 					panic(err)
@@ -157,75 +163,15 @@ func main() {
 				if err != nil {
 					panic(err)
 				}
-				// show the HTML code as a string %s
-
-				htmldata := strings.Replace(string(template), "SVG_PATH", string(html), -1)
-
-				//convert to pdf
-
-				if strings.ToLower(*exportUsingPlaywright) == "true" {
-					pw, err := playwright.Run()
-					if err != nil {
-						log.Fatalf("could not start playwright: %v", err)
-					}
-					browser, err := pw.Chromium.Launch()
-					if err != nil {
-						log.Fatalf("could not launch browser: %v", err)
-					}
-					context, err := browser.NewContext()
-
-					page, err := context.NewPage()
-					_ = page.SetContent(htmldata, playwright.PageSetContentOptions{WaitUntil: playwright.WaitUntilStateNetworkidle})
-					_, err = page.PDF(playwright.PagePdfOptions{
-						Path: playwright.String(pathString + ".pdf"),
-					})
-
-				} else if strings.ToLower(*exportUsingWKHTML) == "true" {
-
-					pdfg, err := wkhtml.NewPDFGenerator()
-					if err != nil {
-						return
-					}
-					pdfg.MarginBottom.Set(0)
-					pdfg.MarginTop.Set(0)
-					pdfg.MarginLeft.Set(0)
-					pdfg.MarginRight.Set(0)
-					pdfg.NoOutline.Set(true)
-					//pdfg.PageSize.Set(wkhtml.PageSizeCustom)
-					pdfg.AddPage(wkhtml.NewPageReader(strings.NewReader(htmldata)))
-
-					// Create PDF document in internal buffer
-					err = pdfg.Create()
-					if err != nil {
-						log.Fatal(err)
-					}
-
-					//Your Pdf Name
-					err = pdfg.WriteFile(pathString + ".pdf")
-					if err != nil {
-						log.Fatal(err)
-					}
-
-				} else {
-					//write html file, embedding svg
-					ioutil.WriteFile(pathString+".html", []byte(htmldata), 0644)
-					cmd := exec.Command(*chromePtr, "--headless", "--disable-gpu", "--print-to-pdf="+pathString+".pdf", "--no-margins", pathString+".html")
-					fmt.Println(cmd.Args)
-					err := cmd.Run()
-					if err != nil {
-						fmt.Printf("cmd.Run() failed with %s\n. You should retry this page.", err)
-					}
-
-				}
-
-				_ = os.Remove(pathString + ".html")
-				_ = os.Remove(pathString + ".svg")
+				ioutil.WriteFile(pathString+".pdf", html, 0644)
+				api.DecryptFile(pathString+".pdf", "", conf)
 
 				filenames = append(filenames, pathString+".pdf")
 			}
 
 			for i := range filenames {
 				//remove last page
+
 				err = retry(5, 2*time.Second, func() (err error) {
 					err = api.RemovePagesFile(filenames[i], "", []string{"2-"}, nil)
 					if err != nil {
@@ -249,27 +195,43 @@ func main() {
 
 }
 
-func GetPages(userToken LoginResponse, issue LibraryData, endpoint string) Response {
-
+func GetIssueDetails(userToken LoginResponse, id int) IssueDetails {
 	client := &http.Client{}
 
-	//req, _ := http.NewRequest("GET", "https://"+endpoint+"/newsstand/v2/newsstands/134/issues/"+strconv.Itoa(issue.Id)+"/content/pages?format=svg&application_id=9901&css_content=true&user_id="+userToken.Data.User.UserIDString, nil)
-	req, _ := http.NewRequest("GET", "https://zinio.com/api/newsstand/newsstands/101/issues/"+strconv.Itoa(issue.Id)+"/content/pages?format=svg&application_id=9901&css_content=true&user_id="+userToken.Data.User.UserIDString, nil)
+	req, _ := http.NewRequest("GET", "https://www.zinio.com/api/reader/content?issue_id="+strconv.Itoa(id)+"&newsstand_id=101&user_id="+userToken.Data.User.UserIDString+"&format=pdf&project=99&logger=null", nil)
 
 	req.Header.Add("Content-Type", "application/json")
-	//req.AddCookie(&http.Cookie{Name: "zwrt", Value: userToken.Data.AccessToken})
 	for _, cookie := range userToken.Data.Cookies {
 		req.AddCookie(cookie)
 
 	}
 
-	//req.Header.Add("Authorization", "bearer "+token)
-	//req.Header.Add("Authorization", token)
+	resp, _ := client.Do(req)
+	data, _ := ioutil.ReadAll(resp.Body)
+
+	responseType := IssueDetails{}
+
+	_ = json.Unmarshal([]byte(data), &responseType)
+
+	return responseType
+}
+
+func GetPages(userToken LoginResponse, issue LibraryData, endpoint string) AutoGenerated {
+
+	client := &http.Client{}
+
+	req, _ := http.NewRequest("GET", "https://zinio.com/api/newsstand/newsstands/101/issues/"+strconv.Itoa(issue.Id)+"/content/pages?format=pdf&application_id=9901&css_content=true&user_id="+userToken.Data.User.UserIDString, nil)
+
+	req.Header.Add("Content-Type", "application/json")
+	for _, cookie := range userToken.Data.Cookies {
+		req.AddCookie(cookie)
+
+	}
 
 	resp, _ := client.Do(req)
 	data, _ := ioutil.ReadAll(resp.Body)
 
-	responseType := Response{}
+	responseType := AutoGenerated{}
 
 	_ = json.Unmarshal([]byte(data), &responseType)
 
@@ -417,10 +379,13 @@ type LibraryData struct {
 	Id          int         `json:"id"`
 	Name        string      `json:"name"`
 	Publication Publication `json:"publication"`
+	LegacyHash  string      `json:"legacy_hash"`
+	Hash        string      `json:"hash"`
 }
 
 type Publication struct {
-	Name string `json:"name"`
+	Name          string `json:"name"`
+	LegacyContent int    `json:"legacy_content"`
 }
 
 // https://stackoverflow.com/questions/47606761/repeat-code-if-an-error-occured
@@ -516,4 +481,292 @@ func randSeq(n int) string {
 		b[i] = letters[rand.Intn(len(letters))]
 	}
 	return string(b)
+}
+
+type IssueDetails struct {
+	Data struct {
+		Issue struct {
+			ID                   int    `json:"id"`
+			PublicationID        int    `json:"publication_id"`
+			Name                 string `json:"name"`
+			InternalName         string `json:"internal_name"`
+			Issn                 string `json:"issn"`
+			VolumeNo             string `json:"volume_no"`
+			IssueNo              string `json:"issue_no"`
+			SequenceNo           string `json:"sequence_no"`
+			Description          string `json:"description"`
+			Slug                 string `json:"slug"`
+			Code                 string `json:"code"`
+			CoverImage           string `json:"cover_image"`
+			CoverDate            string `json:"cover_date"`
+			PublishDate          string `json:"publish_date"`
+			PublishEffectiveDate string `json:"publish_effective_date"`
+			RemoteIdentifier     string `json:"remote_identifier"`
+			LegacyIssueID        int    `json:"legacy_issue_id"`
+			LegacyIdentifier     string `json:"legacy_identifier"`
+			Status               int    `json:"status"`
+			CreatedAt            string `json:"created_at"`
+			ModifiedAt           string `json:"modified_at"`
+			CreatedBy            int    `json:"created_by"`
+			ModifiedBy           int    `json:"modified_by"`
+			FilePath             string `json:"file_path"`
+			Type                 int    `json:"type"`
+			Preview              int    `json:"preview"`
+			HasXML               int    `json:"has_xml"`
+			HasPdf               int    `json:"has_pdf"`
+			Binding              int    `json:"binding"`
+			FulfilmentCode       string `json:"fulfilment_code"`
+			AllowPrinting        int    `json:"allow_printing"`
+			Watermark            int    `json:"watermark"`
+			CoverPrice           int    `json:"cover_price"`
+			CoverCurrency        string `json:"cover_currency"`
+			NoOfPages            int    `json:"no_of_pages"`
+			Classification       int    `json:"classification"`
+			ContentRevision      any    `json:"content_revision"`
+			Publication          struct {
+				ID                         int    `json:"id"`
+				Name                       string `json:"name"`
+				Frequency                  string `json:"frequency"`
+				LegacyIdentifier           string `json:"legacy_identifier"`
+				InternalName               string `json:"internal_name"`
+				Description                string `json:"description"`
+				PublisherID                int    `json:"publisher_id"`
+				ContentRating              int    `json:"content_rating"`
+				RemoteIdentifier           string `json:"remote_identifier"`
+				CreatedAt                  string `json:"created_at"`
+				ModifiedAt                 string `json:"modified_at"`
+				CreatedBy                  int    `json:"created_by"`
+				ModifiedBy                 int64  `json:"modified_by"`
+				SiteID                     int    `json:"site_id"`
+				Status                     int    `json:"status"`
+				Type                       int    `json:"type"`
+				NoOfIssues                 int    `json:"no_of_issues"`
+				Logo                       string `json:"logo"`
+				AllowXML                   int    `json:"allow_xml"`
+				AllowPdf                   int    `json:"allow_pdf"`
+				LatinName                  string `json:"latin_name"`
+				Tagline                    string `json:"tagline"`
+				ParentID                   any    `json:"parent_id"`
+				SeoKeywords                any    `json:"seo_keywords"`
+				SearchKeywords             string `json:"search_keywords"`
+				Issn                       string `json:"issn"`
+				CirculationType            int    `json:"circulation_type"`
+				Binding                    int    `json:"binding"`
+				Watermark                  int    `json:"watermark"`
+				AllowPrinting              int    `json:"allow_printing"`
+				AllowIntegratedFulfilment  int    `json:"allow_integrated_fulfilment"`
+				FulfilmentHouseID          string `json:"fulfilment_house_id"`
+				FulfilmentCode             string `json:"fulfilment_code"`
+				DefaultCurrencyCode        string `json:"default_currency_code"`
+				Slug                       string `json:"slug"`
+				SourceType                 int    `json:"source_type"`
+				LegacyContent              int    `json:"legacy_content"`
+				HasToGetPreviousIssuePrice any    `json:"has_to_get_previous_issue_price"`
+				Country                    struct {
+					Format string `json:"format"`
+					Name   string `json:"name"`
+					Code   string `json:"code"`
+				} `json:"country"`
+				Locale struct {
+					Format string `json:"format"`
+					Name   string `json:"name"`
+					Code   string `json:"code"`
+				} `json:"locale"`
+				Language struct {
+					Format string `json:"format"`
+					Name   string `json:"name"`
+					Code   string `json:"code"`
+				} `json:"language"`
+				Publisher struct {
+					ID               string `json:"id"`
+					Name             string `json:"name"`
+					InternalName     string `json:"internal_name"`
+					Description      any    `json:"description"`
+					Slug             any    `json:"slug"`
+					Code             any    `json:"code"`
+					Logo             any    `json:"logo"`
+					RemoteIdentifier any    `json:"remote_identifier"`
+					Status           int    `json:"status"`
+					Country          struct {
+						Format string `json:"format"`
+						Name   string `json:"name"`
+						Code   string `json:"code"`
+					} `json:"country"`
+				} `json:"publisher"`
+			} `json:"publication"`
+			Metadata []any `json:"metadata"`
+			Product  struct {
+				ID               int    `json:"id"`
+				Code             string `json:"code"`
+				Type             int    `json:"type"`
+				Rrp              any    `json:"rrp"`
+				RrpCurrencyCode  any    `json:"rrp_currency_code"`
+				Name             string `json:"name"`
+				Description      any    `json:"description"`
+				RemoteIdentifier any    `json:"remote_identifier"`
+				LegacyID         any    `json:"legacy_id"`
+				ProjectID        any    `json:"project_id"`
+				PublicationID    int    `json:"publication_id"`
+				IssueID          int    `json:"issue_id"`
+				CatalogID        any    `json:"catalog_id"`
+				TermAmount       any    `json:"term_amount"`
+				TermUnits        any    `json:"term_units"`
+				SaleTier         int    `json:"sale_tier"`
+				Credits          any    `json:"credits"`
+				Duration         any    `json:"duration"`
+				Status           int    `json:"status"`
+				AvailabilityDate string `json:"availability_date"`
+				CreatedAt        string `json:"created_at"`
+				ModifiedAt       string `json:"modified_at"`
+			} `json:"product"`
+			Prices []struct {
+				ID                                  int    `json:"id"`
+				PublicationID                       int    `json:"publication_id"`
+				ProjectID                           int    `json:"project_id"`
+				NewsstandID                         any    `json:"newsstand_id"`
+				ProductType                         int    `json:"product_type"`
+				DefaultProduct                      int    `json:"default_product"`
+				ProductID                           any    `json:"product_id"`
+				IssueID                             any    `json:"issue_id"`
+				SaleTier                            any    `json:"sale_tier"`
+				IssueType                           any    `json:"issue_type"`
+				Country                             any    `json:"country"`
+				Price                               any    `json:"price"`
+				TaxInclusivePrice                   any    `json:"tax_inclusive_price"`
+				PriceAfterCoupon                    any    `json:"price_after_coupon"`
+				TaxInclusivePriceAfterCoupon        any    `json:"tax_inclusive_price_after_coupon"`
+				Coupon                              any    `json:"coupon"`
+				Currency                            any    `json:"currency"`
+				Tier                                string `json:"tier"`
+				DistributionPlatform                int    `json:"distribution_platform"`
+				ReferencePriceID                    int    `json:"reference_price_id"`
+				TaxRate                             any    `json:"tax_rate"`
+				ExchangeRate                        any    `json:"exchange_rate"`
+				CreatedBy                           int    `json:"created_by"`
+				ModifiedBy                          any    `json:"modified_by"`
+				CreatedAt                           string `json:"created_at"`
+				ModifiedAt                          string `json:"modified_at"`
+				Sku                                 string `json:"sku"`
+				DisplayPrice                        any    `json:"display_price"`
+				TaxInclusiveDisplayPrice            any    `json:"tax_inclusive_display_price"`
+				DisplayPriceAfterCoupon             any    `json:"display_price_after_coupon"`
+				TaxInclusiveDisplayPriceAfterCoupon any    `json:"tax_inclusive_display_price_after_coupon"`
+				DisplayCurrency                     any    `json:"display_currency"`
+			} `json:"prices"`
+			AllowXML   int    `json:"allow_xml"`
+			AllowPdf   int    `json:"allow_pdf"`
+			LegacyHash string `json:"legacy_hash"`
+			Hash       string `json:"hash"`
+		} `json:"issue"`
+		Pages []struct {
+			Index       string `json:"index"`
+			FolioNumber string `json:"folio_number"`
+			Src         string `json:"src"`
+			Checksum    string `json:"checksum"`
+			Preview     string `json:"preview"`
+			Type        string `json:"type"`
+			PdfTag      string `json:"pdf_tag"`
+			Mine        string `json:"mine"`
+			Width       int    `json:"width"`
+			Height      int    `json:"height"`
+			Links       []any  `json:"links"`
+			Thumbnail   string `json:"thumbnail"`
+		} `json:"pages"`
+		Stories []struct {
+			ID            int       `json:"id"`
+			UniqueStoryID string    `json:"unique_story_id"`
+			Title         string    `json:"title"`
+			SubTitle      string    `json:"sub_title"`
+			StrapLine     string    `json:"strap_line"`
+			Intro         string    `json:"intro"`
+			Authors       []any     `json:"authors"`
+			Preview       int       `json:"preview"`
+			Priority      int       `json:"priority"`
+			Tag           string    `json:"tag"`
+			StartingPage  string    `json:"starting_page"`
+			PageRange     string    `json:"page_range"`
+			ModifiedDate  time.Time `json:"modified_date"`
+			Template      struct {
+				ID     int      `json:"id"`
+				Code   string   `json:"code"`
+				Name   string   `json:"name"`
+				CSS    []string `json:"css"`
+				Fonts  []string `json:"fonts"`
+				Images []any    `json:"images"`
+			} `json:"template"`
+			Content      string `json:"content"`
+			FeatureImage string `json:"feature_image"`
+			Images       []any  `json:"images"`
+			Section      struct {
+				ID          int    `json:"id"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				Priority    int    `json:"priority"`
+			} `json:"section"`
+			Excerpt        string `json:"excerpt"`
+			ManualTags     []any  `json:"manual_tags"`
+			RelatedObjects struct {
+				Image []any `json:"image"`
+			} `json:"related_objects"`
+		} `json:"stories"`
+		Ads []struct {
+			ID               string `json:"id"`
+			UniqueStoryID    string `json:"unique_story_id"`
+			AdvertiseCode    string `json:"advertise_code"`
+			RelativeObjectID string `json:"relative_object_id"`
+			RelativeRemoteID string `json:"relative_remote_id"`
+			Priority         string `json:"priority"`
+			Position         string `json:"position"`
+			Folio            string `json:"folio"`
+			Version          string `json:"version"`
+			RemoteID         string `json:"remote_id"`
+			AdsType          string `json:"ads_type"`
+			IssuePdfImageAds struct {
+				LocalFileURL    string `json:"local_file_url"`
+				Portrait        string `json:"portrait"`
+				Landscape       string `json:"landscape"`
+				ClickthroughURL string `json:"clickthrough_url"`
+				Checksum        string `json:"checksum"`
+			} `json:"issue_pdf_image_ads"`
+			Created   string `json:"created"`
+			CreatedBy string `json:"created_by"`
+		} `json:"ads"`
+		Entitlement struct {
+			DeliveryID       any       `json:"delivery_id"`
+			LegacyIdentifier any       `json:"legacy_identifier"`
+			Type             int       `json:"type"`
+			ID               int64     `json:"id"`
+			UserID           int64     `json:"user_id"`
+			DeviceID         int       `json:"device_id"`
+			IssueID          int       `json:"issue_id"`
+			PublicationID    int       `json:"publication_id"`
+			ProjectID        int       `json:"project_id"`
+			OrderID          int       `json:"order_id"`
+			LabelID          int64     `json:"label_id"`
+			Status           int       `json:"status"`
+			Archived         bool      `json:"archived"`
+			ArchivedStatus   int       `json:"archived_status"`
+			CreatedAt        time.Time `json:"created_at"`
+			ArchivedAt       any       `json:"archived_at"`
+			ModifiedAt       time.Time `json:"modified_at"`
+		} `json:"entitlement"`
+	} `json:"data"`
+}
+
+type AutoGenerated struct {
+	Status bool `json:"status"`
+	Data   []struct {
+		Index       string `json:"index"`
+		FolioNumber string `json:"folio_number"`
+		Src         string `json:"src"`
+		Checksum    string `json:"checksum"`
+		Preview     string `json:"preview"`
+		Type        string `json:"type"`
+		PdfTag      string `json:"pdf_tag"`
+		Mine        string `json:"mine"`
+		Width       int    `json:"width"`
+		Height      int    `json:"height"`
+		Links       []any  `json:"links"`
+		Thumbnail   string `json:"thumbnail"`
+	} `json:"data"`
 }
