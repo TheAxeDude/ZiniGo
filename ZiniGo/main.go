@@ -7,40 +7,135 @@ import (
 	"fmt"
 	"github.com/icza/gox/stringsx"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
-type Response struct {
-	Status bool   `json:"status"`
-	Data   []Data `json:"data"`
+const zinioBase = "https://www.zinio.com"
+
+// LoginResponse is the response from POST /api/x7b9q-sync
+type LoginResponse struct {
+	Status bool      `json:"status"`
+	Data   LoginData `json:"data"`
 }
 
-type Data struct {
-	Source string `json:"src"`
-	Index  string `json:"index"`
+type LoginData struct {
+	User LoginUser `json:"user"`
+}
+
+type LoginUser struct {
+	UserIDString string `json:"user_id_string"`
+	Email        string `json:"email"`
+}
+
+// LibraryResponse is the paginated response from /api/newsstand/newsstands/101/users/{id}/library-issues
+type LibraryResponse struct {
+	Metadata LibraryMeta    `json:"metadata"`
+	Data     []LibraryIssue `json:"data"`
+}
+
+type LibraryMeta struct {
+	Results int `json:"results"`
+	Offset  int `json:"offset"`
+	Limit   int `json:"limit"`
+}
+
+type LibraryIssue struct {
+	Id          int        `json:"id"`
+	Name        string     `json:"name"`
+	Publication LibraryPub `json:"publication"`
+}
+
+type LibraryPub struct {
+	Id            int    `json:"id"`
+	Name          string `json:"name"`
+	LegacyContent int    `json:"legacy_content"`
+}
+
+// ReaderContent is the response from /api/reader/content
+type ReaderContent struct {
+	Data ReaderData `json:"data"`
+}
+
+type ReaderData struct {
+	Issue ReaderIssue  `json:"issue"`
+	Pages []ReaderPage `json:"pages"`
+}
+
+type ReaderIssue struct {
+	LegacyHash  string `json:"legacy_hash"`
+	Hash        string `json:"hash"`
+	Publication struct {
+		LegacyContent int `json:"legacy_content"`
+	} `json:"publication"`
+}
+
+type ReaderPage struct {
+	Index string `json:"index"`
+	Src   string `json:"src"`
+}
+
+// ZinioClient holds HTTP session state and credentials for re-authentication.
+type ZinioClient struct {
+	http        *http.Client
+	username    string
+	password    string
+	fingerprint string
+	newsstandID int
+	userID      string
+}
+
+func newZinioClient(username, password, fingerprint string, newsstandID int) *ZinioClient {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		log.Fatalf("failed to create cookie jar: %v", err)
+	}
+	return &ZinioClient{
+		http: &http.Client{
+			Jar:     jar,
+			Timeout: 30 * time.Second,
+		},
+		username:    username,
+		password:    password,
+		fingerprint: fingerprint,
+		newsstandID: newsstandID,
+	}
+}
+
+func (z *ZinioClient) relogin() bool {
+	delays := []time.Duration{5 * time.Second, 15 * time.Second, 60 * time.Second}
+	for attempt, delay := range delays {
+		fmt.Printf("Re-authenticating (attempt %d/%d)...\n", attempt+1, len(delays))
+		resp, err := login(z.http, z.username, z.password, z.fingerprint, z.newsstandID)
+		if err == nil && resp.Status && resp.Data.User.UserIDString != "" {
+			z.userID = resp.Data.User.UserIDString
+			fmt.Println("Re-authenticated as:", resp.Data.User.Email)
+			return true
+		}
+		fmt.Printf("Re-login failed: %v — waiting %s before retry\n", err, delay)
+		time.Sleep(delay)
+	}
+	fmt.Println("Re-authentication failed after all attempts")
+	return false
 }
 
 func main() {
-
 	usernamePtr := flag.String("u", "", "Zinio Username")
 	passwordPtr := flag.String("p", "", "Zinio Password")
-	chromePtr := flag.String("c", "google-chrome", "Chrome executable")
-	zinioHostPtr := flag.String("e", "api-sec.ziniopro.com", "Zinio Host (Excluding port and URI Scheme). Known: `api-sec`, `api-sec-2`")
-	//exportUsingWKHTML := flag.String("wkhtml", "false", "Use WKHTML instead of Chrome to generate PDF (false by default)")
-	//exportUsingPlaywright := flag.String("playwright", "false", "Use Playwright Chromium instead of local Chrome to generate PDF (false by default)")
-	deviceFingerprintPtr := flag.String("fingerprint", "abcd123", "This devices fingerprint - presented to Zinio API")
+	deviceFingerprintPtr := flag.String("fingerprint", "abcd123", "Device fingerprint")
+	newsstandIDPtr := flag.Int("ns", 101, "Newsstand ID")
 
 	flag.Parse()
 
@@ -51,289 +146,329 @@ func main() {
 
 	if fileExists(mydir + "/config.json") {
 		fmt.Println("Config file loaded")
-		byteValue, _ := ioutil.ReadFile("config.json")
-		username := gjson.GetBytes(byteValue, "username")
-		if username.Exists() {
-			*usernamePtr = username.String()
+		byteValue, readErr := ioutil.ReadFile("config.json")
+		if readErr != nil {
+			log.Fatalf("failed to read config.json: %v", readErr)
+		}
+
+		if u := gjson.GetBytes(byteValue, "username"); u.Exists() {
+			*usernamePtr = u.String()
 			fmt.Println("Username taken from config file")
 		}
-
-		password := gjson.GetBytes(byteValue, "password")
-		if password.Exists() {
-			*passwordPtr = password.String()
-			fmt.Println("password taken from config file")
+		if p := gjson.GetBytes(byteValue, "password"); p.Exists() {
+			*passwordPtr = p.String()
+			fmt.Println("Password taken from config file")
 		}
-
-		chrome := gjson.GetBytes(byteValue, "chromepath")
-		if chrome.Exists() {
-			*chromePtr = chrome.String()
-			fmt.Println("chromepath taken from config file")
-		}
-
-		fingerprint := gjson.GetBytes(byteValue, "fingerprint")
-		if fingerprint.Exists() {
-			*deviceFingerprintPtr = fingerprint.String()
+		if fp := gjson.GetBytes(byteValue, "fingerprint"); fp.Exists() {
+			*deviceFingerprintPtr = fp.String()
 			fmt.Println("Fingerprint taken from config file")
 		} else {
-			fmt.Println("No fingerprint found in text file, generating and writing")
+			fmt.Println("No fingerprint in config, generating one")
 			newJson, _ := sjson.Set(string(byteValue), "fingerprint", randSeq(15))
-
-			err := ioutil.WriteFile("config.json", []byte(newJson), 0644)
-			if err != nil {
-				log.Fatalf("unable to write file: %v", err)
+			if writeErr := ioutil.WriteFile("config.json", []byte(newJson), 0644); writeErr != nil {
+				log.Fatalf("unable to write file: %v", writeErr)
 			}
+			*deviceFingerprintPtr = gjson.Get(newJson, "fingerprint").String()
 		}
-
 	}
 
-	//fmt.Println("Starting the application...")
-	//initialToken, err := GetInitialToken()
-	//if err != nil {
-	//	os.Exit(1)
-	//}
-	loginToken := GetLoginToken(*usernamePtr, *passwordPtr, *deviceFingerprintPtr)
-	issues := GetLibrary(loginToken, *zinioHostPtr)
-	for i := range issues {
-		issueList := issues[i]
+	if *usernamePtr == "" || *passwordPtr == "" {
+		log.Fatal("Username and password are required. Use -u and -p flags or config.json")
+	}
 
-		//fmt.Println("Found " + strconv.Itoa(len(issues.Data)) + " issues in library.")
+	zc := newZinioClient(*usernamePtr, *passwordPtr, *deviceFingerprintPtr, *newsstandIDPtr)
 
-		fmt.Println("Loading HTML template")
-		defaultTemplate := GetDefaultTemplate()
-		template, _ := ioutil.ReadFile("template.html")
+	loginResp, loginErr := login(zc.http, zc.username, zc.password, zc.fingerprint, zc.newsstandID)
+	if loginErr != nil {
+		log.Fatalf("Login failed: %v", loginErr)
+	}
+	if !loginResp.Status || loginResp.Data.User.UserIDString == "" {
+		log.Fatal("Login failed: server returned status=false")
+	}
+	zc.userID = loginResp.Data.User.UserIDString
+	fmt.Println("Logged in as:", loginResp.Data.User.Email, "| UserID:", zc.userID)
 
-		if template == nil || len(template) == 0 {
-			fmt.Println("template.html not found, or empty. using issue in template. Consider changing this if your files are cropped.")
-			template = []byte(defaultTemplate)
+	issueDirectory := filepath.Join(mydir, "issue")
+	if _, statErr := os.Stat(issueDirectory); os.IsNotExist(statErr) {
+		if mkdirErr := os.Mkdir(issueDirectory, 0700); mkdirErr != nil {
+			log.Fatalf("unable to create issue directory %q: %v", issueDirectory, mkdirErr)
 		}
+	}
 
-		fmt.Println("Resolved working directory to: " + mydir)
-		//fmt.Println("Grabbing list of pages...")
-		issueDirectory := filepath.Join(mydir, "issue")
-		if _, err := os.Stat(issueDirectory); os.IsNotExist(err) {
-			os.Mkdir(issueDirectory, 0600)
+	offset := 0
+	pageSize := 120
+	for {
+		library, fetchErr := zc.fetchLibrary(pageSize, offset)
+		if fetchErr != nil {
+			// Transient failure — wait and retry rather than aborting the whole run
+			fmt.Printf("Library fetch failed: %v — waiting 60s before retry\n", fetchErr)
+			time.Sleep(60 * time.Second)
+			continue
 		}
+		if len(library.Data) == 0 {
+			break
+		}
+		fmt.Printf("Fetched %d issues (offset %d)\n", len(library.Data), offset)
 
-		for _, issue := range issueList.Data {
-
-			issueDetails := GetIssueDetails(loginToken, issue.Id)
-			isLegacy := issueDetails.Data.Issue.Publication.LegacyContent == 1
-			passwordToUse := issueDetails.Data.Issue.Hash
-			if isLegacy {
-				passwordToUse = issueDetails.Data.Issue.LegacyHash
-			}
-			fmt.Println(issue)
-			issuePath := filepath.Join(issueDirectory, strconv.Itoa(issue.Id))
-
-			publicationName := RemoveBadCharacters(issue.Publication.Name)
+		for _, issue := range library.Data {
+			pubName := RemoveBadCharacters(issue.Publication.Name)
 			issueName := RemoveBadCharacters(issue.Name)
+			completeName := filepath.Join(issueDirectory, pubName+" - "+issueName+".pdf")
 
-			completeName := filepath.Join(issueDirectory, publicationName+" - "+issueName+".pdf")
-			fmt.Println("Checking if issue exists: " + completeName)
 			if fileExists(completeName) {
-				fmt.Println("Issue already found: " + completeName)
+				fmt.Println("Already exists:", completeName)
 				continue
 			}
-			fmt.Println("Downloading issue: " + publicationName + " - " + issueName)
 
-			pages := GetPages(loginToken, issue, *zinioHostPtr)
+			fmt.Printf("Downloading: %s - %s\n", pubName, issueName)
+			content := zc.fetchReaderContent(issue.Id)
+			if len(content.Data.Pages) == 0 {
+				fmt.Println("No pages found for issue", issue.Id)
+				continue
+			}
+
+			legacyHash := content.Data.Issue.LegacyHash
+			hash := content.Data.Issue.Hash
+
+			issuePath := filepath.Join(issueDirectory, strconv.Itoa(issue.Id))
+
+			// Build deduplicated password list to try: legacy_hash → hash → unencrypted
+			seen := map[string]bool{}
+			var uniquePasswords []string
+			for _, pw := range []string{legacyHash, hash, ""} {
+				if !seen[pw] {
+					seen[pw] = true
+					uniquePasswords = append(uniquePasswords, pw)
+				}
+			}
 
 			var filenames []string
-			conf := pdfcpu.NewAESConfiguration(passwordToUse, passwordToUse, 256)
-			for i := 0; i < len(pages.Data.Pages); i++ {
-				if len(pages.Data.Pages[i].Src) == 0 {
-
-					fmt.Println("No Download URL for page ", i)
+			for _, page := range content.Data.Pages {
+				if page.Src == "" {
 					continue
 				}
-				fmt.Println("Source ", pages.Data.Pages[i].Src)
-				fmt.Println("ID: ", pages.Data.Pages[i].Index)
+				encPath := issuePath + "_" + page.Index + "_enc.pdf"
+				decPath := issuePath + "_" + page.Index + ".pdf"
 
-				pathString := issuePath + "_" + pages.Data.Pages[i].Index
-
-				resp, err := http.Get(pages.Data.Pages[i].Src)
-				// handle the error if there is one
-				if err != nil {
-					panic(err)
+				resp, dlErr := zc.http.Get(page.Src)
+				if dlErr != nil {
+					fmt.Printf("Failed to download page %s: %s\n", page.Index, dlErr)
+					continue
 				}
-				// do this now so it won't be forgotten
-				defer resp.Body.Close()
-				// reads html as a slice of bytes
-				html, err := ioutil.ReadAll(resp.Body)
-				if err != nil {
-					panic(err)
+				if resp.StatusCode != http.StatusOK {
+					resp.Body.Close()
+					fmt.Printf("Non-200 response for page %s: %d\n", page.Index, resp.StatusCode)
+					continue
 				}
-				ioutil.WriteFile(pathString+".pdf", html, 0644)
-				api.DecryptFile(pathString+".pdf", "", conf)
+				data, readErr := ioutil.ReadAll(resp.Body)
+				resp.Body.Close()
+				if readErr != nil {
+					fmt.Printf("Failed to read page %s: %s\n", page.Index, readErr)
+					continue
+				}
+				ioutil.WriteFile(encPath, data, 0644)
 
-				filenames = append(filenames, pathString+".pdf")
-			}
-
-			for i := range filenames {
-				//remove last page
-
-				err = retry(5, 2*time.Second, func() (err error) {
-					err = api.RemovePagesFile(filenames[i], "", []string{"2-"}, nil)
-					if err != nil {
-						fmt.Printf("Removing extra pages failed with %s\n.", err)
+				decrypted := false
+				for _, pw := range uniquePasswords {
+					conf := model.NewAESConfiguration(pw, pw, 256)
+					if decErr := api.DecryptFile(encPath, decPath, conf); decErr == nil {
+						decrypted = true
+						break
 					}
-
-					return
-				})
+				}
+				if decrypted {
+					os.Remove(encPath)
+				} else {
+					// PDF is not encrypted or uses unknown encryption — use as-is
+					os.Rename(encPath, decPath)
+				}
+				filenames = append(filenames, decPath)
 			}
 
-			_ = api.MergeCreateFile(filenames, completeName, nil)
+			skipMerge := false
+			for i := range filenames {
+				if retryErr := retry(5, 2*time.Second, func() error {
+					err := api.RemovePagesFile(filenames[i], "", []string{"2-"}, nil)
+					if err != nil {
+						fmt.Printf("Removing extra pages failed: %s\n", err)
+					}
+					return err
+				}); retryErr != nil {
+					fmt.Printf("Skipping merge for %s after repeated RemovePages failure: %s\n", completeName, retryErr)
+					skipMerge = true
+					break
+				}
+			}
+
+			if !skipMerge {
+				if mergeErr := api.MergeCreateFile(filenames, completeName, false, nil); mergeErr != nil {
+					fmt.Printf("Merge failed for %s: %s\n", completeName, mergeErr)
+				} else {
+					fmt.Println("Saved:", completeName)
+				}
+			}
 
 			for _, fileName := range filenames {
-				_ = os.Remove(fileName)
+				os.Remove(fileName)
 			}
 		}
 
-	}
-
-	fmt.Println("Terminating the application...")
-
-}
-
-func GetIssueDetails(userToken LoginResponse, id int) IssueDetails {
-	client := &http.Client{}
-
-	req, _ := http.NewRequest("GET", "https://www.zinio.com/api/reader/content?issue_id="+strconv.Itoa(id)+"&newsstand_id=101&user_id="+userToken.Data.User.UserIDString+"&format=pdf&project=99&logger=null", nil)
-
-	req.Header.Add("Content-Type", "application/json")
-	for _, cookie := range userToken.Data.Cookies {
-		req.AddCookie(cookie)
-
-	}
-
-	resp, _ := client.Do(req)
-	data, _ := ioutil.ReadAll(resp.Body)
-
-	responseType := IssueDetails{}
-
-	_ = json.Unmarshal([]byte(data), &responseType)
-
-	return responseType
-}
-
-func GetPages(userToken LoginResponse, issue LibraryData, endpoint string) IssueDetails {
-
-	client := &http.Client{}
-
-	req, _ := http.NewRequest("GET", "https://zinio.com/api/reader/content?issue_id="+strconv.Itoa(issue.Id)+"&newsstand_id=101&user_id="+userToken.Data.User.UserIDString, nil)
-
-	req.Header.Add("Content-Type", "application/json")
-	for _, cookie := range userToken.Data.Cookies {
-		req.AddCookie(cookie)
-
-	}
-
-	resp, _ := client.Do(req)
-	data, _ := ioutil.ReadAll(resp.Body)
-
-	responseType := IssueDetails{}
-
-	_ = json.Unmarshal([]byte(data), &responseType)
-
-	return responseType
-}
-
-func GetInitialToken() (token string, err error) {
-	page, err := http.Get("https://www.zinio.com/za/sign-in")
-	if err != nil {
-		fmt.Println("Unable to get initial token: " + err.Error())
-		return "", err
-	}
-
-	data, _ := ioutil.ReadAll(page.Body)
-
-	re := regexp.MustCompile(`"(jwt)":"((\\"|[^"])*)"`)
-
-	found := re.FindSubmatch(data)
-
-	return string(found[2]), nil
-}
-
-func GetLoginToken(username string, password string, fingerprint string) LoginResponse {
-	fmt.Println("GettingLogin")
-
-	client := &http.Client{}
-
-	var jsonStr = []byte(`{"email":"` + username + `","password":"` + password + `","device":{"name":"Windows Chrome","fingerprint":"` + fingerprint + `","device_type":"Desktop","client_type":"Web"},"newsstand":{"currency":"ZAR","id":134,"country":"ZA","name":"South Africa","cc":"za","localeCode":"en_ZA","userLang":"en_ZA","userCountry":"ZA","userCurrency":"ZAR","requiresCookies":true,"requiresExplicitConsent":true,"requiresAdultConfirmation":true,"adWords":{"id":1,"label":""},"isDefaultNewsstand":false}}`)
-	fmt.Println(string(jsonStr))
-
-	req, _ := http.NewRequest("POST", "https://www.zinio.com/api/login?project=99&logger=null", bytes.NewBuffer(jsonStr))
-
-	req.Header.Add("Content-Type", "application/json")
-	//req.Header.Add("Authorization", initialToken)
-
-	resp, _ := client.Do(req)
-	data, _ := ioutil.ReadAll(resp.Body)
-	//fmt.Println(string(data))
-
-	responseType := LoginResponse{}
-
-	_ = json.Unmarshal([]byte(data), &responseType)
-
-	for _, cookie := range resp.Cookies() {
-		fmt.Println("cookie name:" + cookie.Name + "cookie value" + cookie.Value)
-		if cookie.Name == "zwrt" {
-			responseType.Data.AccessToken = cookie.Value
-		}
-		if cookie.Name == "zwrrt" {
-			responseType.Data.RefreshToken = cookie.Value
-		}
-	}
-	responseType.Data.Cookies = resp.Cookies()
-	fmt.Println("GotLogin")
-
-	return responseType
-
-}
-
-func GetLibrary(userToken LoginResponse, endpoint string) []LibraryResponse {
-	fmt.Println("Fetching Library")
-	client := &http.Client{}
-
-	var itemsToReturn []LibraryResponse
-	issuesToFetch := 120
-
-	pageToFetch := 1
-	for {
-		fmt.Println("Fetching page:" + strconv.Itoa(pageToFetch))
-
-		req, _ := http.NewRequest("GET", "https://zinio.com/api/newsstand/newsstands/101/users/"+userToken.Data.User.UserIDString+"/library_issues?limit="+strconv.Itoa(issuesToFetch)+"&page="+strconv.Itoa(pageToFetch), nil)
-
-		req.Header.Add("Content-Type", "application/json")
-		for _, cookie := range userToken.Data.Cookies {
-			req.AddCookie(cookie)
-		}
-		//req.AddCookie(&http.Cookie{Name: "zwrt", Value: userToken.Data.AccessToken})
-		//req.Header.Add("Authorization", "bearer "+userToken.Data.Token.AccessToken)
-		//req.Header.Add("Authorization", initialToken)
-
-		resp, err := client.Do(req)
-
-		if err != nil {
-			fmt.Println("Unable to get Library: " + err.Error())
-		}
-
-		data, _ := ioutil.ReadAll(resp.Body)
-		fmt.Println(string(data))
-
-		responseType := LibraryResponse{}
-
-		_ = json.Unmarshal(data, &responseType)
-
-		if len(responseType.Data) > 0 {
-			itemsToReturn = append(itemsToReturn, responseType)
-			pageToFetch++
-		} else {
+		offset += len(library.Data)
+		if len(library.Data) < pageSize {
 			break
 		}
 	}
 
-	return itemsToReturn
+	fmt.Println("Done.")
+}
+
+func login(client *http.Client, username, password, fingerprint string, newsstandID int) (LoginResponse, error) {
+	fmt.Println("Logging in...")
+
+	payload := map[string]interface{}{
+		"email":    username,
+		"password": password,
+		"device": map[string]string{
+			"name":        "Windows Chrome",
+			"fingerprint": fingerprint,
+			"device_type": "Desktop",
+			"client_type": "Web",
+		},
+		"newsstand": map[string]interface{}{
+			"currency": "USD", "id": newsstandID, "country": "US", "name": "United States",
+			"cc": "us", "localeCode": "en_US", "userLang": "en_US", "userCountry": "US",
+			"userCurrency": "USD",
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return LoginResponse{}, fmt.Errorf("failed to marshal login payload: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", zinioBase+"/api/x7b9q-sync", bytes.NewBuffer(body))
+	if err != nil {
+		return LoginResponse{}, fmt.Errorf("failed to create login request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Set("Origin", zinioBase)
+	req.Header.Set("Referer", zinioBase+"/sign-in")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return LoginResponse{}, fmt.Errorf("login request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return LoginResponse{}, fmt.Errorf("login returned HTTP %d", resp.StatusCode)
+	}
+
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return LoginResponse{}, fmt.Errorf("failed to read login response: %w", err)
+	}
+
+	var result LoginResponse
+	if err := json.Unmarshal(data, &result); err != nil {
+		return LoginResponse{}, fmt.Errorf("failed to parse login response: %w", err)
+	}
+	return result, nil
+}
+
+func (z *ZinioClient) fetchLibrary(limit, offset int) (LibraryResponse, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		u := fmt.Sprintf("%s/api/newsstand/newsstands/%d/users/%s/library-issues?limit=%d&offset=%d&sort=desc",
+			zinioBase, z.newsstandID, z.userID, limit, offset)
+
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			return LibraryResponse{}, fmt.Errorf("failed to create library request: %w", err)
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		req.Header.Set("Origin", zinioBase)
+
+		resp, err := z.http.Do(req)
+		if err != nil {
+			return LibraryResponse{}, fmt.Errorf("library request failed: %w", err)
+		}
+
+		data, readErr := ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return LibraryResponse{}, fmt.Errorf("failed to read library response: %w", readErr)
+		}
+
+		if resp.StatusCode == 401 && attempt == 0 {
+			fmt.Println("Library 401, re-authenticating...")
+			if !z.relogin() {
+				return LibraryResponse{}, fmt.Errorf("re-authentication failed")
+			}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return LibraryResponse{}, fmt.Errorf("library returned HTTP %d", resp.StatusCode)
+		}
+
+		fmt.Println("Library response:", string(data)[:min(len(string(data)), 200)])
+		var result LibraryResponse
+		if err := json.Unmarshal(data, &result); err != nil {
+			return LibraryResponse{}, fmt.Errorf("failed to parse library response: %w", err)
+		}
+		return result, nil
+	}
+	return LibraryResponse{}, fmt.Errorf("library fetch failed after re-authentication")
+}
+
+func (z *ZinioClient) fetchReaderContent(issueID int) ReaderContent {
+	for attempt := 0; attempt < 2; attempt++ {
+		u := fmt.Sprintf("%s/api/reader/content?issue_id=%d&newsstand_id=%d&user_id=%s",
+			zinioBase, issueID, z.newsstandID, url.QueryEscape(z.userID))
+
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			fmt.Printf("Failed to create reader request for issue %d: %v\n", issueID, err)
+			return ReaderContent{}
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		req.Header.Set("Origin", zinioBase)
+
+		resp, err := z.http.Do(req)
+		if err != nil {
+			fmt.Printf("Reader content fetch failed for issue %d: %v\n", issueID, err)
+			return ReaderContent{}
+		}
+
+		data, readErr := ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			fmt.Printf("Failed to read reader response for issue %d: %v\n", issueID, readErr)
+			return ReaderContent{}
+		}
+
+		if resp.StatusCode == 401 && attempt == 0 {
+			fmt.Println("Reader 401, re-authenticating...")
+			if !z.relogin() {
+				return ReaderContent{}
+			}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			fmt.Printf("Reader returned HTTP %d for issue %d\n", resp.StatusCode, issueID)
+			return ReaderContent{}
+		}
+
+		var result ReaderContent
+		if err := json.Unmarshal(data, &result); err != nil {
+			fmt.Printf("Failed to parse reader response for issue %d: %v\n", issueID, err)
+			return ReaderContent{}
+		}
+		fmt.Printf("Issue %d: %d pages\n", issueID, len(result.Data.Pages))
+		return result
+	}
+	return ReaderContent{}
 }
 
 func fileExists(filename string) bool {
@@ -341,135 +476,35 @@ func fileExists(filename string) bool {
 	if os.IsNotExist(err) {
 		return false
 	}
-
 	if os.IsPermission(err) {
-		fmt.Println("Unable to read location - check permissions: " + filename)
+		fmt.Println("Permission denied:", filename)
 		return true
 	}
 	return !info.IsDir()
 }
 
-type LoginResponse struct {
-	Status bool      `json:"status"`
-	Data   LoginData `json:"data"`
-}
-
-type LoginData struct {
-	User         User   `json:"user"`
-	Token        Token  `json:"token"`
-	RefreshToken string `json:"refreshToken"`
-	AccessToken  string
-	Cookies      []*http.Cookie
-}
-
-type User struct {
-	UserIDString string `json:"user_id_string"`
-}
-
-type Token struct {
-	AccessToken string `json:"access_token"`
-}
-
-type LibraryResponse struct {
-	Status bool          `json:"status"`
-	Data   []LibraryData `json:"data"`
-}
-
-type LibraryData struct {
-	Id          int         `json:"id"`
-	Name        string      `json:"name"`
-	Publication Publication `json:"publication"`
-	LegacyHash  string      `json:"legacy_hash"`
-	Hash        string      `json:"hash"`
-}
-
-type Publication struct {
-	Name          string `json:"name"`
-	LegacyContent int    `json:"legacy_content"`
-}
-
-// https://stackoverflow.com/questions/47606761/repeat-code-if-an-error-occured
-func retry(attempts int, sleep time.Duration, f func() error) (err error) {
+func retry(attempts int, sleep time.Duration, f func() error) error {
 	for i := 0; ; i++ {
-		err = f()
+		err := f()
 		if err == nil {
-			return
+			return nil
 		}
-
-		if i >= (attempts - 1) {
-			break
+		if i >= attempts-1 {
+			return fmt.Errorf("after %d attempts, last error: %s", attempts, err)
 		}
-
 		time.Sleep(sleep)
-
 		fmt.Println("retrying after error:", err)
 	}
-	return fmt.Errorf("after %d attempts, last error: %s", attempts, err)
-}
-
-func GetDefaultTemplate() string {
-	return `<html>
-	<head>
-	<!--<style>
-	@media all {
-		@page { margin: 0px; }
-		body { margin-top: 0cm;
-		margin-left:auto;
-	}
-
-
-	}
-	</style>-->
-	<style>
-		html, body {
-		width:  fit-content;
-		height: fit-content;
-		margin:  0px;
-		padding: 0px;
-	}
-	</style>
-
-	<style id=page_style>
-	@page { size: 100px 100px ; margin : 0px }
-	</style>
-	</head>
-	<body>
-	<object type="image/svg+xml" data="SVG_PATH</object>
-
-	<script>
-		window.onload = fixpage;
-
-	function fixpage() {
-
-		renderBlock = document.getElementsByTagName("html")[0];
-		renderBlockInfo = window.getComputedStyle(renderBlock)
-
-		// fix chrome page bug
-		fixHeight = parseInt(renderBlockInfo.height) + 1 + "px"
-
-		pageCss = "@page { size: " + renderBlockInfo.width + " " + fixHeight +" ; margin:0;}"
-		document.getElementById("page_style").innerHTML = pageCss
-	}
-	</script>
-	</body>
-
-
-	</html>`
 }
 
 var badCharacters = []string{"/", "\\", "<", ">", ":", "\"", "|", "?", "*"}
 
 func RemoveBadCharacters(input string) string {
-
 	temp := input
-
 	for _, badChar := range badCharacters {
 		temp = strings.Replace(temp, badChar, "_", -1)
 	}
-
-	temp = stringsx.Clean(temp)
-
-	return temp
+	return stringsx.Clean(temp)
 }
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
@@ -483,290 +518,9 @@ func randSeq(n int) string {
 	return string(b)
 }
 
-type IssueDetails struct {
-	Data struct {
-		Issue struct {
-			ID                   int    `json:"id"`
-			PublicationID        int    `json:"publication_id"`
-			Name                 string `json:"name"`
-			InternalName         string `json:"internal_name"`
-			Issn                 string `json:"issn"`
-			VolumeNo             string `json:"volume_no"`
-			IssueNo              string `json:"issue_no"`
-			SequenceNo           string `json:"sequence_no"`
-			Description          string `json:"description"`
-			Slug                 string `json:"slug"`
-			Code                 string `json:"code"`
-			CoverImage           string `json:"cover_image"`
-			CoverDate            string `json:"cover_date"`
-			PublishDate          string `json:"publish_date"`
-			PublishEffectiveDate string `json:"publish_effective_date"`
-			RemoteIdentifier     string `json:"remote_identifier"`
-			LegacyIssueID        int    `json:"legacy_issue_id"`
-			LegacyIdentifier     string `json:"legacy_identifier"`
-			Status               int    `json:"status"`
-			CreatedAt            string `json:"created_at"`
-			ModifiedAt           string `json:"modified_at"`
-			CreatedBy            int    `json:"created_by"`
-			ModifiedBy           int    `json:"modified_by"`
-			FilePath             string `json:"file_path"`
-			Type                 int    `json:"type"`
-			Preview              int    `json:"preview"`
-			HasXML               int    `json:"has_xml"`
-			HasPdf               int    `json:"has_pdf"`
-			Binding              int    `json:"binding"`
-			FulfilmentCode       string `json:"fulfilment_code"`
-			AllowPrinting        int    `json:"allow_printing"`
-			Watermark            int    `json:"watermark"`
-			CoverPrice           int    `json:"cover_price"`
-			CoverCurrency        string `json:"cover_currency"`
-			NoOfPages            int    `json:"no_of_pages"`
-			Classification       int    `json:"classification"`
-			ContentRevision      any    `json:"content_revision"`
-			Publication          struct {
-				ID                         int    `json:"id"`
-				Name                       string `json:"name"`
-				Frequency                  string `json:"frequency"`
-				LegacyIdentifier           string `json:"legacy_identifier"`
-				InternalName               string `json:"internal_name"`
-				Description                string `json:"description"`
-				PublisherID                int    `json:"publisher_id"`
-				ContentRating              int    `json:"content_rating"`
-				RemoteIdentifier           string `json:"remote_identifier"`
-				CreatedAt                  string `json:"created_at"`
-				ModifiedAt                 string `json:"modified_at"`
-				CreatedBy                  int    `json:"created_by"`
-				ModifiedBy                 int64  `json:"modified_by"`
-				SiteID                     int    `json:"site_id"`
-				Status                     int    `json:"status"`
-				Type                       int    `json:"type"`
-				NoOfIssues                 int    `json:"no_of_issues"`
-				Logo                       string `json:"logo"`
-				AllowXML                   int    `json:"allow_xml"`
-				AllowPdf                   int    `json:"allow_pdf"`
-				LatinName                  string `json:"latin_name"`
-				Tagline                    string `json:"tagline"`
-				ParentID                   any    `json:"parent_id"`
-				SeoKeywords                any    `json:"seo_keywords"`
-				SearchKeywords             string `json:"search_keywords"`
-				Issn                       string `json:"issn"`
-				CirculationType            int    `json:"circulation_type"`
-				Binding                    int    `json:"binding"`
-				Watermark                  int    `json:"watermark"`
-				AllowPrinting              int    `json:"allow_printing"`
-				AllowIntegratedFulfilment  int    `json:"allow_integrated_fulfilment"`
-				FulfilmentHouseID          string `json:"fulfilment_house_id"`
-				FulfilmentCode             string `json:"fulfilment_code"`
-				DefaultCurrencyCode        string `json:"default_currency_code"`
-				Slug                       string `json:"slug"`
-				SourceType                 int    `json:"source_type"`
-				LegacyContent              int    `json:"legacy_content"`
-				HasToGetPreviousIssuePrice any    `json:"has_to_get_previous_issue_price"`
-				Country                    struct {
-					Format string `json:"format"`
-					Name   string `json:"name"`
-					Code   string `json:"code"`
-				} `json:"country"`
-				Locale struct {
-					Format string `json:"format"`
-					Name   string `json:"name"`
-					Code   string `json:"code"`
-				} `json:"locale"`
-				Language struct {
-					Format string `json:"format"`
-					Name   string `json:"name"`
-					Code   string `json:"code"`
-				} `json:"language"`
-				Publisher struct {
-					ID               string `json:"id"`
-					Name             string `json:"name"`
-					InternalName     string `json:"internal_name"`
-					Description      any    `json:"description"`
-					Slug             any    `json:"slug"`
-					Code             any    `json:"code"`
-					Logo             any    `json:"logo"`
-					RemoteIdentifier any    `json:"remote_identifier"`
-					Status           int    `json:"status"`
-					Country          struct {
-						Format string `json:"format"`
-						Name   string `json:"name"`
-						Code   string `json:"code"`
-					} `json:"country"`
-				} `json:"publisher"`
-			} `json:"publication"`
-			Metadata []any `json:"metadata"`
-			Product  struct {
-				ID               int    `json:"id"`
-				Code             string `json:"code"`
-				Type             int    `json:"type"`
-				Rrp              any    `json:"rrp"`
-				RrpCurrencyCode  any    `json:"rrp_currency_code"`
-				Name             string `json:"name"`
-				Description      any    `json:"description"`
-				RemoteIdentifier any    `json:"remote_identifier"`
-				LegacyID         any    `json:"legacy_id"`
-				ProjectID        any    `json:"project_id"`
-				PublicationID    int    `json:"publication_id"`
-				IssueID          int    `json:"issue_id"`
-				CatalogID        any    `json:"catalog_id"`
-				TermAmount       any    `json:"term_amount"`
-				TermUnits        any    `json:"term_units"`
-				SaleTier         int    `json:"sale_tier"`
-				Credits          any    `json:"credits"`
-				Duration         any    `json:"duration"`
-				Status           int    `json:"status"`
-				AvailabilityDate string `json:"availability_date"`
-				CreatedAt        string `json:"created_at"`
-				ModifiedAt       string `json:"modified_at"`
-			} `json:"product"`
-			Prices []struct {
-				ID                                  int    `json:"id"`
-				PublicationID                       int    `json:"publication_id"`
-				ProjectID                           int    `json:"project_id"`
-				NewsstandID                         any    `json:"newsstand_id"`
-				ProductType                         int    `json:"product_type"`
-				DefaultProduct                      int    `json:"default_product"`
-				ProductID                           any    `json:"product_id"`
-				IssueID                             any    `json:"issue_id"`
-				SaleTier                            any    `json:"sale_tier"`
-				IssueType                           any    `json:"issue_type"`
-				Country                             any    `json:"country"`
-				Price                               any    `json:"price"`
-				TaxInclusivePrice                   any    `json:"tax_inclusive_price"`
-				PriceAfterCoupon                    any    `json:"price_after_coupon"`
-				TaxInclusivePriceAfterCoupon        any    `json:"tax_inclusive_price_after_coupon"`
-				Coupon                              any    `json:"coupon"`
-				Currency                            any    `json:"currency"`
-				Tier                                string `json:"tier"`
-				DistributionPlatform                int    `json:"distribution_platform"`
-				ReferencePriceID                    int    `json:"reference_price_id"`
-				TaxRate                             any    `json:"tax_rate"`
-				ExchangeRate                        any    `json:"exchange_rate"`
-				CreatedBy                           int    `json:"created_by"`
-				ModifiedBy                          any    `json:"modified_by"`
-				CreatedAt                           string `json:"created_at"`
-				ModifiedAt                          string `json:"modified_at"`
-				Sku                                 string `json:"sku"`
-				DisplayPrice                        any    `json:"display_price"`
-				TaxInclusiveDisplayPrice            any    `json:"tax_inclusive_display_price"`
-				DisplayPriceAfterCoupon             any    `json:"display_price_after_coupon"`
-				TaxInclusiveDisplayPriceAfterCoupon any    `json:"tax_inclusive_display_price_after_coupon"`
-				DisplayCurrency                     any    `json:"display_currency"`
-			} `json:"prices"`
-			AllowXML   int    `json:"allow_xml"`
-			AllowPdf   int    `json:"allow_pdf"`
-			LegacyHash string `json:"legacy_hash"`
-			Hash       string `json:"hash"`
-		} `json:"issue"`
-		Pages []struct {
-			Index       string `json:"index"`
-			FolioNumber string `json:"folio_number"`
-			Src         string `json:"src"`
-			Checksum    string `json:"checksum"`
-			Preview     string `json:"preview"`
-			Type        string `json:"type"`
-			PdfTag      string `json:"pdf_tag"`
-			Mine        string `json:"mine"`
-			Width       int    `json:"width"`
-			Height      int    `json:"height"`
-			Links       []any  `json:"links"`
-			Thumbnail   string `json:"thumbnail"`
-		} `json:"pages"`
-		Stories []struct {
-			ID            int       `json:"id"`
-			UniqueStoryID string    `json:"unique_story_id"`
-			Title         string    `json:"title"`
-			SubTitle      string    `json:"sub_title"`
-			StrapLine     string    `json:"strap_line"`
-			Intro         string    `json:"intro"`
-			Authors       []any     `json:"authors"`
-			Preview       int       `json:"preview"`
-			Priority      int       `json:"priority"`
-			Tag           string    `json:"tag"`
-			StartingPage  string    `json:"starting_page"`
-			PageRange     string    `json:"page_range"`
-			ModifiedDate  time.Time `json:"modified_date"`
-			Template      struct {
-				ID     int      `json:"id"`
-				Code   string   `json:"code"`
-				Name   string   `json:"name"`
-				CSS    []string `json:"css"`
-				Fonts  []string `json:"fonts"`
-				Images []any    `json:"images"`
-			} `json:"template"`
-			Content      string `json:"content"`
-			FeatureImage string `json:"feature_image"`
-			Images       []any  `json:"images"`
-			Section      struct {
-				ID          int    `json:"id"`
-				Name        string `json:"name"`
-				Description string `json:"description"`
-				Priority    int    `json:"priority"`
-			} `json:"section"`
-			Excerpt        string `json:"excerpt"`
-			ManualTags     []any  `json:"manual_tags"`
-			RelatedObjects struct {
-				Image []any `json:"image"`
-			} `json:"related_objects"`
-		} `json:"stories"`
-		Ads []struct {
-			ID               string `json:"id"`
-			UniqueStoryID    string `json:"unique_story_id"`
-			AdvertiseCode    string `json:"advertise_code"`
-			RelativeObjectID string `json:"relative_object_id"`
-			RelativeRemoteID string `json:"relative_remote_id"`
-			Priority         string `json:"priority"`
-			Position         string `json:"position"`
-			Folio            string `json:"folio"`
-			Version          string `json:"version"`
-			RemoteID         string `json:"remote_id"`
-			AdsType          string `json:"ads_type"`
-			IssuePdfImageAds struct {
-				LocalFileURL    string `json:"local_file_url"`
-				Portrait        string `json:"portrait"`
-				Landscape       string `json:"landscape"`
-				ClickthroughURL string `json:"clickthrough_url"`
-				Checksum        string `json:"checksum"`
-			} `json:"issue_pdf_image_ads"`
-			Created   string `json:"created"`
-			CreatedBy string `json:"created_by"`
-		} `json:"ads"`
-		Entitlement struct {
-			DeliveryID       any       `json:"delivery_id"`
-			LegacyIdentifier any       `json:"legacy_identifier"`
-			Type             int       `json:"type"`
-			ID               int64     `json:"id"`
-			UserID           int64     `json:"user_id"`
-			DeviceID         int       `json:"device_id"`
-			IssueID          int       `json:"issue_id"`
-			PublicationID    int       `json:"publication_id"`
-			ProjectID        int       `json:"project_id"`
-			OrderID          int       `json:"order_id"`
-			LabelID          int64     `json:"label_id"`
-			Status           int       `json:"status"`
-			Archived         bool      `json:"archived"`
-			ArchivedStatus   int       `json:"archived_status"`
-			CreatedAt        time.Time `json:"created_at"`
-			ArchivedAt       any       `json:"archived_at"`
-			ModifiedAt       time.Time `json:"modified_at"`
-		} `json:"entitlement"`
-	} `json:"data"`
-}
-
-type AutoGenerated struct {
-	Status bool `json:"status"`
-	Data   []struct {
-		Index       string `json:"index"`
-		FolioNumber string `json:"folio_number"`
-		Src         string `json:"src"`
-		Checksum    string `json:"checksum"`
-		Preview     string `json:"preview"`
-		Type        string `json:"type"`
-		PdfTag      string `json:"pdf_tag"`
-		Mine        string `json:"mine"`
-		Width       int    `json:"width"`
-		Height      int    `json:"height"`
-		Links       []any  `json:"links"`
-		Thumbnail   string `json:"thumbnail"`
-	} `json:"data"`
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
